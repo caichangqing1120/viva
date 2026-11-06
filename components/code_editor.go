@@ -1,6 +1,7 @@
 package components
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/vivaui/viva/text"
@@ -20,6 +21,21 @@ type CodeEditorRun struct {
 type CodeEditorGutterMarker struct {
 	Line  int
 	Color ui.Color
+}
+
+// CodeEditorFoldRange hides logical lines after Header through LastLine,
+// inclusive. Ranges are sorted by Header and do not overlap; the header stays visible.
+type CodeEditorFoldRange struct {
+	Header, LastLine int
+}
+
+// CodeEditorFoldMarker adds a disclosure button to a visible logical line.
+// The caller owns its ID and handles clicks.
+type CodeEditorFoldMarker struct {
+	Line      int
+	ID        ui.ID
+	Collapsed bool
+	Label     string
 }
 
 // CodeEditorMaxHighlightedLine is the longest line, in bytes, that is handed to
@@ -63,6 +79,11 @@ type CodeEditorSnapshot struct {
 	MarkerGutter bool
 	// GutterMarkers paint in a lane before the line numbers, or on their own.
 	GutterMarkers []CodeEditorGutterMarker
+	// FoldGutter reserves a separate lane before the marker and line-number lanes.
+	FoldGutter bool
+	// FoldedLines change visible rows without changing the caller's text.
+	FoldedLines []CodeEditorFoldRange
+	FoldMarkers []CodeEditorFoldMarker
 	// CurrentLine tints the line the caret is on, while nothing is selected.
 	CurrentLine bool
 	// MatchBrackets outlines the bracket next to the caret and its partner.
@@ -110,6 +131,8 @@ type CodeEditor struct {
 	tabWidth  int
 	fitted    bool
 	rows      []codeRow
+	foldInput []CodeEditorFoldRange
+	folds     []CodeEditorFoldRange
 	shown     []string
 	widest    int
 	lineCount int
@@ -202,6 +225,11 @@ func (editor *CodeEditor) Paint(canvas *ui.Canvas, theme ui.Theme, bounds ui.Rec
 
 	// The gutter is as wide as the number of the last line, a cell either side.
 	gutter := float32(0)
+	foldLane := float32(0)
+	if snapshot.FoldGutter || len(snapshot.FoldMarkers) > 0 {
+		foldLane = 16
+		gutter += foldLane
+	}
 	markerLane := float32(0)
 	if snapshot.MarkerGutter || len(snapshot.GutterMarkers) > 0 {
 		markerLane = 16
@@ -228,7 +256,7 @@ func (editor *CodeEditor) Paint(canvas *ui.Canvas, theme ui.Theme, bounds ui.Rec
 		Height: max(0, bounds.Height-2*codeEditorPadY-barHeight),
 	}
 	cols := max(1, int(content.Width/cellWidth))
-	editor.fit(value, cols, snapshot.Wrap, tabWidth)
+	editor.fitWithFolds(value, cols, snapshot.Wrap, tabWidth, snapshot.FoldedLines)
 	editor.content, editor.cellWidth, editor.lineHeight = content, cellWidth, lineHeight
 
 	placeholder := value == ""
@@ -308,7 +336,7 @@ func (editor *CodeEditor) Paint(canvas *ui.Canvas, theme ui.Theme, bounds ui.Rec
 				markerIndex++
 			}
 			if markerIndex < len(snapshot.GutterMarkers) && snapshot.GutterMarkers[markerIndex].Line == int(row.line) {
-				canvas.Rounded(ui.Rect{X: bounds.X + inset + (markerLane-9)/2, Y: y + (lineHeight-9)/2, Width: 9, Height: 9}, 4.5, snapshot.GutterMarkers[markerIndex].Color)
+				canvas.Rounded(ui.Rect{X: bounds.X + inset + foldLane + (markerLane-9)/2, Y: y + (lineHeight-9)/2, Width: 9, Height: 9}, 4.5, snapshot.GutterMarkers[markerIndex].Color)
 				markerIndex++
 			}
 		}
@@ -335,6 +363,47 @@ func (editor *CodeEditor) Paint(canvas *ui.Canvas, theme ui.Theme, bounds ui.Rec
 			TextBounds: content, TextSize: size, HideNativeOverlays: true, Placement: editor,
 		}
 		canvas.HitWithOptions(snapshot.ID, bounds, snapshot.Label, options)
+	}
+	if foldLane > 0 && len(snapshot.FoldMarkers) != 0 {
+		canvas.Clip(ui.Rect{X: bounds.X + inset, Y: content.Y, Width: foldLane, Height: content.Height})
+		markerIndex := 0
+		if firstRow < len(editor.rows) {
+			firstLine := int(editor.rows[firstRow].line)
+			markerIndex = sort.Search(len(snapshot.FoldMarkers), func(i int) bool { return snapshot.FoldMarkers[i].Line >= firstLine })
+		}
+		for index := firstRow; index < len(editor.rows); index++ {
+			y := content.Y + float32(index)*lineHeight - editor.scrollY
+			if y >= content.Y+content.Height {
+				break
+			}
+			row := editor.rows[index]
+			if !editor.firstOfLine(index) {
+				continue
+			}
+			for markerIndex < len(snapshot.FoldMarkers) && snapshot.FoldMarkers[markerIndex].Line < int(row.line) {
+				markerIndex++
+			}
+			if markerIndex >= len(snapshot.FoldMarkers) || snapshot.FoldMarkers[markerIndex].Line != int(row.line) {
+				continue
+			}
+			marker := snapshot.FoldMarkers[markerIndex]
+			markerIndex++
+			icon := chevronDownIcon
+			label := "Collapse fold"
+			if marker.Collapsed {
+				icon = chevronRightIcon
+				label = "Expand fold"
+			}
+			if marker.Label != "" {
+				label = marker.Label
+			}
+			button := ui.Rect{X: bounds.X + inset, Y: y + (lineHeight-16)/2, Width: 16, Height: 16}
+			canvas.DrawIcon(icon, button.Inset(ui.All(1)), theme.MutedForeground)
+			if !marker.ID.IsZero() {
+				canvas.HitWithOptions(marker.ID, button, label, ui.HitOptions{Role: ui.RoleButton, Disabled: snapshot.Disabled})
+			}
+		}
+		canvas.Unclip()
 	}
 	if !snapshot.ScrollbarID.IsZero() {
 		area := BeginScrollArea(canvas, theme, ui.Rect{X: bounds.X + bounds.Width - codeEditorBarSize - 1, Y: content.Y, Width: 10, Height: content.Height},

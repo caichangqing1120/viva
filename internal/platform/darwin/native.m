@@ -3376,6 +3376,21 @@ static void viva_encode_scene(
 
 @end
 
+static NSString *viva_copy_override_text(viva_text_input_config input) {
+    if (!input.copy_override) {
+        return nil;
+    }
+    if (input.copy_utf8_length == 0) {
+        return [@"" retain];
+    }
+    if (input.copy_utf8 == NULL) {
+        return nil;
+    }
+    return [[NSString alloc] initWithBytes:input.copy_utf8
+                                   length:input.copy_utf8_length
+                                 encoding:NSUTF8StringEncoding];
+}
+
 @interface VivaMetalView : NSView <NSTextInputClient> {
     CAMetalLayer *_metalLayer;
     id<MTLCommandQueue> _commandQueue;
@@ -3405,6 +3420,8 @@ static void viva_encode_scene(
     BOOL _textNavigationKeys;
     NSRect _textCaretFrame;
     BOOL _textSecure;
+    BOOL _textCopyOverride;
+    NSString *_textCopyText;
     BOOL _textTerminal;
     BOOL _textHideNativeOverlays;
     int _textMonoFace;
@@ -3609,6 +3626,12 @@ static int viva_navigation_command(SEL selector) {
         _textLayer = textInput.layer;
         _textCaretFrame = NSMakeRect(textInput.caret_x, textInput.caret_y, textInput.caret_width, textInput.caret_height);
         _textSecure = textInput.secure != 0;
+        _textCopyOverride = textInput.copy_override != 0;
+        _textCopyText = viva_copy_override_text(textInput);
+        if (_textCopyOverride && _textCopyText == nil) {
+            [self release];
+            return nil;
+        }
         _textTerminal = textInput.terminal != 0;
         _textHideNativeOverlays = textInput.hide_native_overlays != 0;
         _textMonoFace = textInput.mono_face;
@@ -3761,6 +3784,7 @@ static int viva_navigation_command(SEL selector) {
     [_accessibilityElements release];
     [_textPipeline release];
     [_text release];
+    [_textCopyText release];
     [_textColor release];
     [_commandQueue release];
     [_metalLayer release];
@@ -4893,12 +4917,18 @@ static void viva_set_secure_event_input(BOOL on) {
     }
 
     NSString *replacement = nil;
+    NSString *copyReplacement = nil;
     NSColor *replacementColor = nil;
     if (textInput.enabled) {
         replacement = [[NSString alloc] initWithBytes:textInput.utf8
                                                length:textInput.utf8_length
                                              encoding:NSUTF8StringEncoding];
         if (replacement == nil) {
+            return 2;
+        }
+        copyReplacement = viva_copy_override_text(textInput);
+        if (textInput.copy_override && copyReplacement == nil) {
+            [replacement release];
             return 2;
         }
         replacementColor = [[NSColor colorWithSRGBRed:textInput.red
@@ -4920,6 +4950,9 @@ static void viva_set_secure_event_input(BOOL on) {
 
     if (!textInput.enabled) {
         _textSecure = NO;
+        _textCopyOverride = NO;
+        [_textCopyText release];
+        _textCopyText = nil;
         _textTerminal = NO;
         _textHideNativeOverlays = NO;
         _textMonoFace = 0;
@@ -4948,6 +4981,9 @@ static void viva_set_secure_event_input(BOOL on) {
 
     [_text release];
     _text = replacement;
+    [_textCopyText release];
+    _textCopyText = copyReplacement;
+    _textCopyOverride = textInput.copy_override != 0;
     [_textColor release];
     _textColor = replacementColor;
     _textFrame = NSMakeRect(textInput.x, textInput.y, textInput.width, textInput.height);
@@ -5218,30 +5254,37 @@ static void viva_set_secure_event_input(BOOL on) {
     return [self.window convertRectToScreen:windowRect];
 }
 
-// copy: puts the selected text on the pasteboard. A password field never
-// exports what it holds, and an empty selection leaves the pasteboard alone.
-- (void)copy:(id)sender {
+// A failed copy never emits a cut edit. A custom selection is supplied by the
+// application while the native primary selection remains an ordinary caret.
+- (BOOL)copyToPasteboard {
     if (!_textInputEnabled || _textSecure) {
-        return;
+        return NO;
     }
-    NSRange selected = viva_clamp_range(_selectedRange, _text.length);
-    if (selected.length == 0) {
-        return;
+    NSString *value = _textCopyText;
+    if (!_textCopyOverride) {
+        NSRange selected = viva_clamp_range(_selectedRange, _text.length);
+        if (selected.length == 0) {
+            return NO;
+        }
+        value = [_text substringWithRange:selected];
+    }
+    if (value.length == 0) {
+        return NO;
     }
     NSPasteboard *pasteboard = viva_pasteboard();
     [pasteboard clearContents];
-    [pasteboard setString:[_text substringWithRange:selected] forType:NSPasteboardTypeString];
+    return [pasteboard setString:value forType:NSPasteboardTypeString];
+}
+
+- (void)copy:(id)sender {
+    [self copyToPasteboard];
 }
 
 // cut: copies, then removes the selection exactly as Backspace would.
 - (void)cut:(id)sender {
-    if (!_textInputEnabled || _textSecure) {
+    if (![self copyToPasteboard]) {
         return;
     }
-    if (viva_clamp_range(_selectedRange, _text.length).length == 0) {
-        return;
-    }
-    [self copy:sender];
     [self emitTextKind:VIVA_TEXT_COMMAND_EVENT
                   text:@""
          selectedRange:NSMakeRange(0, 0)

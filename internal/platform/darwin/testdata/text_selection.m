@@ -101,6 +101,7 @@ void vivaTextInput(uintptr_t handle, void *view, int kind, const unsigned char *
 - (BOOL)hasCaretTimer;
 - (void)beginComposition;
 - (void)setTerminal:(BOOL)value;
+- (void)setCopyOverride:(NSString *)value enabled:(BOOL)enabled;
 - (void)setCellWidth:(CGFloat)value;
 - (void)enableKeyCallbacks;
 - (void)endComposition;
@@ -109,6 +110,11 @@ void vivaTextInput(uintptr_t handle, void *view, int kind, const unsigned char *
 @end
 
 @implementation SelectionView
+- (void)setCopyOverride:(NSString *)value enabled:(BOOL)enabled {
+    _textCopyOverride = enabled;
+    [_textCopyText release];
+    _textCopyText = [value copy];
+}
 - (void)resetText:(NSString *)value {
     [self stopCaretBlink];
     [_text release];
@@ -477,6 +483,22 @@ int main(void) {
         NSUInteger edits = view->editEvents;
         assert([view performKeyEquivalent:keyEvent(@"x", command)]);
         assert(view->editEvents == edits);
+
+        // A component-owned disjoint selection copies its prepared text even
+        // though the native primary selection is collapsed.
+        [view setCopyOverride:@"bc\n  " enabled:YES];
+        [view copy:nil];
+        assert([[board stringForType:NSPasteboardTypeString] isEqualToString:@"bc\n  "]);
+        [view cut:nil];
+        assert(view->editEvents == edits + 1 && view->lastCommand == VIVA_TEXT_DELETE_BACKWARD);
+        [view setCopyOverride:@"" enabled:YES];
+        [board clearContents];
+        [board setString:@"keep" forType:NSPasteboardTypeString];
+        [view copy:nil];
+        [view cut:nil];
+        assert([[board stringForType:NSPasteboardTypeString] isEqualToString:@"keep"]);
+        assert(view->editEvents == edits + 1);
+        [view setCopyOverride:nil enabled:NO];
 
         // Paste inserts the pasteboard text; the case of the key does not matter.
         [board clearContents];

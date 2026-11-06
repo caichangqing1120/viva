@@ -191,6 +191,11 @@ func TestTextEventRedrawRecognizesAlreadyAppliedNativeState(t *testing.T) {
 	if state.textInputAlreadyUpdated(&moved) {
 		t.Fatal("changed editor geometry was skipped")
 	}
+	copied := *input
+	copied.CopyOverride, copied.CopyText = true, "column rows"
+	if state.textInputAlreadyUpdated(&copied) {
+		t.Fatal("changed clipboard selection was skipped")
+	}
 	if state.textInputAlreadyUpdated(nil) {
 		t.Fatal("disable update was skipped")
 	}
@@ -330,7 +335,7 @@ func BenchmarkTerminalKeyRouting(b *testing.B) {
 }
 
 func TestNativeTextInputCarriesAltSendsEscape(t *testing.T) {
-	native := makeNativeTextInput(TextInput{AltSendsEscape: true}, nil)
+	native := makeNativeTextInput(TextInput{AltSendsEscape: true}, nil, nil)
 	if native.alt_sends_escape == 0 {
 		t.Fatal("AltSendsEscape was not passed to AppKit")
 	}
@@ -360,9 +365,16 @@ func TestNativeFocusedTextInputDeliversFunctionKeysToTheApplication(t *testing.T
 }
 
 func TestNativeTextInputCarriesFontWeight(t *testing.T) {
-	native := makeNativeTextInput(TextInput{Weight: ui.WeightSemibold}, nil)
+	native := makeNativeTextInput(TextInput{Weight: ui.WeightSemibold}, nil, nil)
 	if float32(native.font_weight) != ui.WeightSemibold {
 		t.Fatalf("native font weight = %v, want %v", native.font_weight, ui.WeightSemibold)
+	}
+}
+
+func TestNativeTextInputCarriesCopyOverride(t *testing.T) {
+	native := makeNativeTextInput(TextInput{CopyOverride: true, CopyText: "猫"}, nil, nil)
+	if native.copy_override == 0 || int(native.copy_utf8_length) != len("猫") {
+		t.Fatalf("native copy override = %d, length=%d", native.copy_override, native.copy_utf8_length)
 	}
 }
 

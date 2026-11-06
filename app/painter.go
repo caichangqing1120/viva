@@ -1267,6 +1267,8 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 		FontSize: fontSize, Weight: weight, Layer: painter.platformLayer(context.Layer), Multiline: context.Multiline, Secure: context.Secure, Terminal: context.Terminal || context.TypeAhead,
 		AltSendsEscape: input.AltSendsEscape, KeyReleases: context.Terminal && input.KeyReleases, MonoFace: input.MonoFace,
 		NavigationKeys:     input.NavigationKeys || context.NavigationKeys,
+		CopyOverride:       input.CopyOverride,
+		CopyText:           input.CopyText,
 		HideNativeOverlays: input.HideNativeOverlays || context.HideNativeOverlays,
 		Color: platform.Color{
 			Red: float64(tint.Red), Green: float64(tint.Green),
@@ -1357,6 +1359,7 @@ func samePlatformTextInput(left, right platform.TextInput) bool {
 		left.FontSize == right.FontSize && left.Weight == right.Weight && left.Layer == right.Layer && left.Multiline == right.Multiline && left.Secure == right.Secure && left.Terminal == right.Terminal && left.MonoFace == right.MonoFace &&
 		left.AltSendsEscape == right.AltSendsEscape && left.KeyReleases == right.KeyReleases &&
 		left.NavigationKeys == right.NavigationKeys &&
+		left.CopyOverride == right.CopyOverride && left.CopyText == right.CopyText &&
 		left.HideNativeOverlays == right.HideNativeOverlays &&
 		left.Placed == right.Placed && left.CaretX == right.CaretX && left.CaretY == right.CaretY &&
 		left.CaretWidth == right.CaretWidth && left.CaretHeight == right.CaretHeight &&

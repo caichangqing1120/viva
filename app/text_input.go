@@ -152,6 +152,11 @@ type TextInput struct {
 	Weight   float32
 	Color    ui.Color
 	MonoFace ui.MonoFace
+	// CopyOverride supplies Copy/Cut with an application-owned selection such as
+	// disjoint code-editor rows. Empty CopyText leaves the clipboard unchanged.
+	// Native editing and paste continue to use State or Editor.
+	CopyOverride bool
+	CopyText     string
 	// AltSendsEscape asks printable Alt/Option chords on a terminal to arrive as
 	// raw key events with the unmodified character in KeyEvent.Text. Terminal
 	// encoders can then send the conventional Escape-prefixed Meta sequence.

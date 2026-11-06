@@ -600,12 +600,19 @@ func presentTextInput(state *runState, view unsafe.Pointer, update TextInputUpda
 
 	var native C.viva_text_input_config
 	var memory unsafe.Pointer
+	var copyMemory unsafe.Pointer
 	if update.Input != nil {
 		memory = textBytes(update.Input.State.Value)
 		if memory != nil {
 			defer C.free(memory)
 		}
-		native = makeNativeTextInput(*update.Input, memory)
+		if update.Input.CopyOverride {
+			copyMemory = textBytes(update.Input.CopyText)
+			if copyMemory != nil {
+				defer C.free(copyMemory)
+			}
+		}
+		native = makeNativeTextInput(*update.Input, memory, copyMemory)
 	}
 	previousHandler := state.textHandler
 	previousState := state.textState

@@ -61,6 +61,9 @@ typedef struct viva_text_line {
 typedef struct {
     const unsigned char *utf8;
     size_t utf8_length;
+    const unsigned char *copy_utf8;
+    size_t copy_utf8_length;
+    int copy_override;
     float x;
     float y;
     float width;

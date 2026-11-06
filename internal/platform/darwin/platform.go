@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"runtime/cgo"
 	"sync/atomic"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/vivaui/viva/internal/input"
@@ -227,6 +228,7 @@ func sameTextInputPresentation(left, right TextInput) bool {
 		left.Width == right.Width && left.Height == right.Height &&
 		left.FontSize == right.FontSize && left.Layer == right.Layer && left.Multiline == right.Multiline && left.Secure == right.Secure &&
 		left.Terminal == right.Terminal && left.MonoFace == right.MonoFace && left.AltSendsEscape == right.AltSendsEscape && left.KeyReleases == right.KeyReleases && left.Color == right.Color &&
+		left.CopyOverride == right.CopyOverride && left.CopyText == right.CopyText &&
 		left.State == right.State
 }
 
@@ -401,12 +403,19 @@ func (application *nativeApplication) OpenWindow(config Config) (platform.Window
 
 	var nativeText C.viva_text_input_config
 	var textMemory unsafe.Pointer
+	var copyMemory unsafe.Pointer
 	if config.TextInput != nil {
 		textMemory = textBytes(config.TextInput.State.Value)
 		if textMemory != nil {
 			defer C.free(textMemory)
 		}
-		nativeText = makeNativeTextInput(*config.TextInput, textMemory)
+		if config.TextInput.CopyOverride {
+			copyMemory = textBytes(config.TextInput.CopyText)
+			if copyMemory != nil {
+				defer C.free(copyMemory)
+			}
+		}
+		nativeText = makeNativeTextInput(*config.TextInput, textMemory, copyMemory)
 	}
 
 	accessibilityMemory, accessibilityStrings := makeNativeAccessibility(config.Accessibility)
@@ -791,6 +800,9 @@ func validateTextInput(input *TextInput) error {
 	if input.OnEvent == nil {
 		return fmt.Errorf("darwin: text input handler is required")
 	}
+	if input.CopyOverride && !utf8.ValidString(input.CopyText) {
+		return fmt.Errorf("darwin: invalid clipboard override text")
+	}
 	return validateTextState(input.State)
 }
 
@@ -816,7 +828,7 @@ func validTextRange(value text.Range, length int) bool {
 	return value.Start >= 0 && value.End >= value.Start && value.End <= length
 }
 
-func makeNativeTextInput(input TextInput, value unsafe.Pointer) C.viva_text_input_config {
+func makeNativeTextInput(input TextInput, value, copyValue unsafe.Pointer) C.viva_text_input_config {
 	syncMonoFamilies()
 	editor := text.NewEditor(input.State.Value)
 	selectedStart := editor.RuneIndexToUTF16(input.State.Selection.Start)
@@ -826,6 +838,9 @@ func makeNativeTextInput(input TextInput, value unsafe.Pointer) C.viva_text_inpu
 	return C.viva_text_input_config{
 		utf8:                 (*C.uchar)(value),
 		utf8_length:          C.size_t(len(input.State.Value)),
+		copy_utf8:            (*C.uchar)(copyValue),
+		copy_utf8_length:     C.size_t(len(input.CopyText)),
+		copy_override:        C.int(boolInt(input.CopyOverride)),
 		x:                    C.float(input.X),
 		y:                    C.float(input.Y),
 		width:                C.float(input.Width),

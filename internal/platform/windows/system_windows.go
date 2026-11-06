@@ -512,7 +512,17 @@ func OpenDirectory(options OpenDirectoryOptions) (string, bool, error) {
 }
 
 func SaveFile(options SaveFileOptions) (string, bool, error) {
+	path, _, canceled, err := saveFile(options, "", false)
+	return path, canceled, err
+}
+
+func SaveFileWithCheckbox(options SaveFileOptions, label string, initial bool) (string, bool, bool, error) {
+	return saveFile(options, label, initial)
+}
+
+func saveFile(options SaveFileOptions, checkboxLabel string, initial bool) (string, bool, bool, error) {
 	var path string
+	var checked bool
 	canceled := false
 	err := withSTA(func() error {
 		dialog, err := createFileDialog(&saveDialogClass, &saveDialogInterface)
@@ -520,6 +530,14 @@ func SaveFile(options SaveFileOptions) (string, bool, error) {
 			return err
 		}
 		defer release(&dialog)
+		var custom uintptr
+		if checkboxLabel != "" {
+			custom, err = addSaveDialogCheckbox(dialog, checkboxLabel, initial)
+			if err != nil {
+				return err
+			}
+			defer release(&custom)
+		}
 		flags := uint32(forceFileSystem | pathMustExist | overwritePrompt | noChangeDirectory)
 		if err := configureFileDialog(dialog, options.Title, options.Filters, flags); err != nil {
 			return err
@@ -556,9 +574,15 @@ func SaveFile(options SaveFileOptions) (string, bool, error) {
 		}
 		defer release(&item)
 		path, err = shellItemPath(item)
+		if err != nil {
+			return err
+		}
+		if custom != 0 {
+			checked, err = saveDialogCheckboxState(custom)
+		}
 		return err
 	})
-	return path, canceled, err
+	return path, checked, canceled, err
 }
 
 func OpenURL(target string) error {

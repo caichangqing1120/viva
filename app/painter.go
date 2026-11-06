@@ -1269,6 +1269,7 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 		NavigationKeys:     input.NavigationKeys || context.NavigationKeys,
 		CopyOverride:       input.CopyOverride,
 		CopyText:           input.CopyText,
+		CopyRectangular:    input.CopyRectangular,
 		HideNativeOverlays: input.HideNativeOverlays || context.HideNativeOverlays,
 		Color: platform.Color{
 			Red: float64(tint.Red), Green: float64(tint.Green),
@@ -1305,7 +1306,7 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 		return platform.TextState{}, fmt.Errorf("app: native text event without an active handler")
 	}
 	appEvent := TextEvent{
-		Kind: TextEventKind(event.Kind), Text: event.Text,
+		Kind: TextEventKind(event.Kind), Text: event.Text, Rectangular: event.Rectangular,
 		Selection:       appTextRange(event.Selection),
 		MarkedSelection: appTextRange(event.MarkedSelection),
 		Replacement:     appTextRange(event.Replacement), HasReplacement: event.HasReplacement,
@@ -1359,7 +1360,7 @@ func samePlatformTextInput(left, right platform.TextInput) bool {
 		left.FontSize == right.FontSize && left.Weight == right.Weight && left.Layer == right.Layer && left.Multiline == right.Multiline && left.Secure == right.Secure && left.Terminal == right.Terminal && left.MonoFace == right.MonoFace &&
 		left.AltSendsEscape == right.AltSendsEscape && left.KeyReleases == right.KeyReleases &&
 		left.NavigationKeys == right.NavigationKeys &&
-		left.CopyOverride == right.CopyOverride && left.CopyText == right.CopyText &&
+		left.CopyOverride == right.CopyOverride && left.CopyText == right.CopyText && left.CopyRectangular == right.CopyRectangular &&
 		left.HideNativeOverlays == right.HideNativeOverlays &&
 		left.Placed == right.Placed && left.CaretX == right.CaretX && left.CaretY == right.CaretY &&
 		left.CaretWidth == right.CaretWidth && left.CaretHeight == right.CaretHeight &&

@@ -6,7 +6,9 @@ func markNonNativeSystemUsed() {}
 
 func driverClipboardText() (string, error, bool) { return "", nil, false }
 
-func driverSetClipboardText(string) (error, bool) { return nil, false }
+func driverSetClipboardText(string) (error, bool)            { return nil, false }
+func driverSetRectangularClipboardText(string) (error, bool) { return nil, false }
+func driverClipboardRectangular() (bool, bool)               { return false, false }
 
 func driverSetPrimarySelection(string) (error, bool) { return nil, false }
 

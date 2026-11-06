@@ -32,6 +32,8 @@ func nativeOnClipboardChange(notify func()) error {
 func nativeSetClipboardText(value string) error {
 	return darwinplatform.SetClipboardText(value)
 }
+func nativeSetRectangularClipboardText(value string) error { return nativeSetClipboardText(value) }
+func nativeClipboardRectangular() bool                     { return false }
 
 func nativeSetCursor(cursor Cursor) error {
 	return darwinplatform.SetCursorShape(uint8(cursor))

@@ -208,6 +208,10 @@ jobs:
       # what the taskbar previews.
       - name: Minimized windows keep their visible frame
         run: go test ./internal/platform/windows -run '^TestMinimizedPaintKeepsTheVisibleSwapChain$' -count=1 -v
+      - name: Rectangular clipboard format interop
+        env:
+          VIVA_WINDOWS_CLIPBOARD: '1'
+        run: go test ./internal/platform/windows -run '^TestRectangularClipboardFormatsAndPlainReplacement$' -count=1 -v
 
   # A noise-tolerant benchmark regression gate for the pure-Go paths: the base
   # revision and the pull request run the same benchmarks on the same runner,

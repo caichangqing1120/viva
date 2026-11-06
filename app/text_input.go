@@ -92,6 +92,7 @@ const (
 type TextEvent struct {
 	Kind            TextEventKind
 	Text            string
+	Rectangular     bool
 	Selection       TextRange
 	MarkedSelection TextRange
 	Replacement     TextRange
@@ -157,6 +158,9 @@ type TextInput struct {
 	// Native editing and paste continue to use State or Editor.
 	CopyOverride bool
 	CopyText     string
+	// CopyRectangular advertises a rectangular selection on Windows when
+	// Copy/Cut writes CopyText. Other platforms retain their plain-text path.
+	CopyRectangular bool
 	// AltSendsEscape asks printable Alt/Option chords on a terminal to arrive as
 	// raw key events with the unmodified character in KeyEvent.Text. Terminal
 	// encoders can then send the conventional Escape-prefixed Meta sequence.

@@ -779,10 +779,11 @@ type TextInput struct {
 	// Terminal makes the editor a preedit surface for a character-cell
 	// terminal: text in the fixed-pitch font, no caret and no selection, and
 	// keys that are not text delivered as raw key events (see KeyEvent.Text).
-	Terminal     bool
-	MonoFace     ui.MonoFace
-	CopyOverride bool
-	CopyText     string
+	Terminal        bool
+	MonoFace        ui.MonoFace
+	CopyOverride    bool
+	CopyText        string
+	CopyRectangular bool
 	// AltSendsEscape routes printable Alt/Option chords in a Terminal input to
 	// raw key delivery, with the base character in KeyEvent.Text.
 	AltSendsEscape bool
@@ -916,6 +917,7 @@ const (
 type TextEvent struct {
 	Kind            TextEventKind
 	Text            string
+	Rectangular     bool
 	Selection       text.Range
 	MarkedSelection text.Range
 	Replacement     text.Range

@@ -101,10 +101,10 @@
 //     fixed-pitch font and paints only the rows in view, each as one label
 //     whatever colors the caller's highlighter gives it: line numbers, a
 //     current-line tint, bracket matching, find marks, display-only
-//     `CodeRepresentation` labels, indentation guides, soft-wrap end markers
-//     and sideways scrolling, with native selection and IME geometry retained.
-//     `CodeEditorCommandForKey` maps key events to the editing commands of a
-//     text.Editor given code options (SetCode), and
+//     `CodeRepresentation` labels and inverted blobs, indentation guides,
+//     soft-wrap end markers and sideways scrolling, with native selection
+//     and IME geometry retained. `CodeEditorCommandForKey` maps key events
+//     to the editing commands of a text.Editor given code options (SetCode), and
 //     `TextareaMovementForKey` with `CodeEditor.Move` moves by row. The scroll
 //     position can be read and set, and offsets map to and from vertical
 //     positions (`CodeEditor.YAtOffset`), for views kept scrolled together.

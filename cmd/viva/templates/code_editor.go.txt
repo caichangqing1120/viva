@@ -125,6 +125,8 @@ type CodeEditorSnapshot struct {
 	ShowIndentGuides bool
 	// ShowEOL paints EOLLabel at hard line breaks, never at soft wraps or an unterminated final line.
 	ShowEOL bool
+	// ShowWrapSymbol paints an end marker on soft-wrapped rows when Wrap is enabled.
+	ShowWrapSymbol bool
 	// EOLLabel is the line-ending marker, such as LF or CRLF. An empty label uses LF.
 	EOLLabel string
 	// EOLLabels overrides EOLLabel per zero-based logical line for mixed line endings.
@@ -299,6 +301,10 @@ func (editor *CodeEditor) Paint(canvas *ui.Canvas, theme ui.Theme, bounds ui.Rec
 		Height: max(0, bounds.Height-2*codeEditorPadY-barHeight),
 	}
 	cols := max(1, int(content.Width/cellWidth))
+	showWrapSymbol := snapshot.Wrap && snapshot.ShowWrapSymbol && cols > 1
+	if showWrapSymbol {
+		cols--
+	}
 	editor.fitWithFolds(value, cols, snapshot.Wrap, tabWidth, snapshot.FoldedLines)
 	if snapshot.ShowIndentGuides && editor.indents == nil {
 		editor.indents = indentationLevels(editor.text, tabWidth)
@@ -359,7 +365,7 @@ func (editor *CodeEditor) Paint(canvas *ui.Canvas, theme ui.Theme, bounds ui.Rec
 		caretWidth: max(snapshot.CaretWidth, 1), caretColor: caretColor(snapshot.CaretColor, foreground),
 		language: snapshot.Language, highlight: snapshot.Highlight, highlightLine: snapshot.HighlightLine, face: snapshot.MonoFace,
 		firstColumn: int(editor.scrollX / cellWidth), marks: snapshot.Marks, current: snapshot.CurrentMark,
-		showWhitespace: snapshot.ShowWhitespace, showIndentGuides: snapshot.ShowIndentGuides, showEOL: snapshot.ShowEOL, eolLabel: snapshot.EOLLabel, eolLabels: snapshot.EOLLabels,
+		showWhitespace: snapshot.ShowWhitespace, showIndentGuides: snapshot.ShowIndentGuides, showEOL: snapshot.ShowEOL, showWrapSymbol: showWrapSymbol, eolLabel: snapshot.EOLLabel, eolLabels: snapshot.EOLLabels,
 		invisibleColor: snapshot.InvisibleColor,
 	}
 	if paint.invisibleColor.Alpha == 0 {
@@ -580,6 +586,7 @@ type codePaint struct {
 	bracketsOK                               bool
 	showWhitespace, showEOL                  bool
 	showIndentGuides                         bool
+	showWrapSymbol                           bool
 	eolLabel                                 string
 	eolLabels                                []string
 	invisibleColor                           ui.Color
@@ -780,6 +787,13 @@ func (paint *codePaint) row(index int, y float32) {
 	}
 	if paint.showEOL && !editor.softWrapped(index) && rowEnd < len(paint.value) && paint.value[rowEnd] == '\n' {
 		paint.lineEnding(row, y, left)
+	}
+	if paint.showWrapSymbol && editor.softWrapped(index) {
+		canvas.Label("↪", ui.Rect{
+			X:     editor.content.X + editor.content.Width - paint.cellWidth,
+			Y:     y + (paint.lineHeight-paint.cellHeight)/2,
+			Width: paint.cellWidth, Height: paint.cellHeight,
+		}, ui.TextStyle{Size: paint.size * 0.75, Color: paint.invisibleColor, Mono: true, MonoFace: paint.face})
 	}
 
 	if paint.compositionEnd > paint.compositionStart && paint.compositionStart <= rowEnd && paint.compositionEnd >= rowStart {

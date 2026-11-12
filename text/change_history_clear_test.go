@@ -185,3 +185,26 @@ func TestClearChangeHistoryDiscardedBranchIsUnreachable(t *testing.T) {
 		t.Fatal("clear resurrected a discarded save point")
 	}
 }
+
+func TestCompositionActiveReportsInFlightPreedits(t *testing.T) {
+	editor := NewEditor("abc")
+	if editor.CompositionActive() {
+		t.Fatal("a plain editor must not report an active composition")
+	}
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("precondition: tentative composition must be available")
+	}
+	editor.MoveTo(1, false)
+	if handled := editor.ApplyComposition(CompositionEvent{Phase: CompositionUpdate, Text: "か"}); !handled {
+		t.Fatal("precondition: the update must be handled")
+	}
+	if !editor.CompositionActive() {
+		t.Fatal("a live tentative composition must be reported active")
+	}
+	if handled := editor.ApplyComposition(CompositionEvent{Phase: CompositionCancel}); !handled {
+		t.Fatal("cancel must be handled")
+	}
+	if editor.CompositionActive() {
+		t.Fatal("a cancelled composition must not stay active")
+	}
+}

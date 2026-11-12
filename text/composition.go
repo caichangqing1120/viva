@@ -163,6 +163,20 @@ func (editor *Editor) DisableTentativeComposition() (ok bool) {
 
 // TentativeCompositionEnabled reports the opt-in capability. It is nil-safe,
 // readonly and allocation-free.
+// CompositionActive reports whether a pre-edit currently owns rollback state:
+// either the legacy composing flag or a live tentative composition. Callers use
+// it to refuse operations that would strand an in-flight composition.
+func (editor *Editor) CompositionActive() bool {
+	if editor == nil {
+		return false
+	}
+	if editor.composing {
+		return true
+	}
+	state := editor.compositionState()
+	return state != nil && state.active
+}
+
 func (editor *Editor) TentativeCompositionEnabled() bool {
 	if editor == nil || editor.journal == nil {
 		return false

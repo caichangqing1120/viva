@@ -35,13 +35,15 @@ func codeCells(r rune, column, tabWidth int) int {
 	return text.CellWidth(r)
 }
 
-// indentationLevels is the leading cells of every line; a blank line takes the
-// smaller indentation of its nearest text lines so guides run through it.
+// indentationLevels is the leading cells of every line, in the displayed columns
+// the layout uses, so a representation that hides or widens a leading tab moves
+// the indent guides with the text; a blank line takes the smaller indentation of
+// its nearest text lines so guides run through it.
 //
 // The forward pass stores a blank line as -2-previous, where previous is the
 // indentation of the last text line above it (-1 when there is none), so the
 // backward pass can resolve it without a second slice.
-func indentationLevels(value string, tabWidth int) []int {
+func indentationLevels(value string, tabWidth int, reps []CodeRepresentation) []int {
 	levels := make([]int, 0, strings.Count(value, "\n")+1)
 	previous := -1
 	for line := range strings.SplitSeq(value, "\n") {
@@ -49,10 +51,8 @@ func indentationLevels(value string, tabWidth int) []int {
 	leading:
 		for _, character := range line {
 			switch character {
-			case ' ':
-				column++
-			case '\t':
-				column += tabWidth - column%tabWidth
+			case ' ', '\t':
+				column += displayCells(character, column, tabWidth, reps)
 			default:
 				blank = false
 				break leading
@@ -95,8 +95,12 @@ func representationOf(reps []CodeRepresentation, character rune) (CodeRepresenta
 }
 
 func displayCells(character rune, column, tabWidth int, reps []CodeRepresentation) int {
-	representation, ok := representationOf(reps, character)
-	if !ok {
+	representation, represented := representationOf(reps, character)
+	return displayCellsFor(character, column, tabWidth, representation, represented)
+}
+
+func displayCellsFor(character rune, column, tabWidth int, representation CodeRepresentation, represented bool) int {
+	if !represented {
 		return codeCells(character, column, tabWidth)
 	}
 	cells := 0
@@ -809,7 +813,7 @@ func gridRuns(dst []gfx.TextRun, line string, spec *gridRunSpec) (runs []gfx.Tex
 	for at := 0; at < len(line); {
 		r, size := decodeAt(line, at)
 		representation, represented := representationOf(spec.representations, r)
-		width := displayCells(r, column, spec.tabWidth, spec.representations)
+		width := displayCellsFor(r, column, spec.tabWidth, representation, represented)
 		bytes := size
 		if represented {
 			bytes = len(representation.Label)
@@ -837,6 +841,9 @@ func gridRuns(dst []gfx.TextRun, line string, spec *gridRunSpec) (runs []gfx.Tex
 			color := spec.foreground
 			if represented && spec.representationColor.Alpha != 0 {
 				color = spec.representationColor
+				if spec.disabled {
+					color.Alpha *= 0.5
+				}
 			}
 			if next < len(spec.highlight) && spec.highlight[next].Start <= relative {
 				color = spec.highlight[next].Color
@@ -856,9 +863,13 @@ func gridRuns(dst []gfx.TextRun, line string, spec *gridRunSpec) (runs []gfx.Tex
 				color = spec.selectionForeground
 			}
 			if represented && representation.Blob {
-				color = spec.background
 				if selected {
 					color = spec.selectionBackground
+				} else {
+					color = spec.background
+					if spec.disabled {
+						color.Alpha *= 0.5
+					}
 				}
 			}
 			plain := !represented && (r == '\t' || r >= 0x20 && r < 0x7f && !startsWithMark(line, at+size, len(line)))

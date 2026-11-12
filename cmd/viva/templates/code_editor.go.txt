@@ -404,7 +404,7 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 	}
 	editor.fitWithRepresentations(value, cols, snapshot.Wrap, tabWidth, snapshot.FoldedLines, snapshot.Representations)
 	if snapshot.ShowIndentGuides && editor.indents == nil {
-		editor.indents = indentationLevels(editor.text, tabWidth)
+		editor.indents = indentationLevels(editor.text, tabWidth, editor.reps)
 	}
 	editor.content, editor.cellWidth, editor.lineHeight = content, cellWidth, lineHeight
 
@@ -986,9 +986,6 @@ func (paint *codePaint) indentGuides(row codeRow, y, left float32) {
 	}
 }
 
-// representationBlobs paints the inverted inset a CodeRepresentation asks for
-// behind its label. It walks the row's source runes so the blob lands on the
-// same cells the run layout gives the substitute label.
 func (paint *codePaint) representationBlobs(row codeRow, y, left float32, highlight []CodeEditorRun) {
 	editor := paint.editor
 	if len(editor.reps) == 0 {
@@ -996,12 +993,12 @@ func (paint *codePaint) representationBlobs(row codeRow, y, left float32, highli
 	}
 	column, highlightIndex := 0, 0
 	for at := int(row.start); at < int(row.end); {
-		character, size := decodeAt(paint.value, at)
-		width := displayCells(character, column, editor.tabWidth, editor.reps)
 		if column > paint.lastColumn {
 			break
 		}
+		character, size := decodeAt(paint.value, at)
 		representation, represented := representationOf(editor.reps, character)
+		width := displayCellsFor(character, column, editor.tabWidth, representation, represented)
 		if represented && representation.Blob && representation.Label != "" && width > 0 && column+width > paint.firstColumn {
 			sourceColumn := at - int(row.lineStart)
 			for highlightIndex < len(highlight) && highlight[highlightIndex].End <= sourceColumn {
@@ -1043,8 +1040,9 @@ func (paint *codePaint) whitespace(row codeRow, y, left float32) {
 			break
 		}
 		character, size := decodeAt(paint.value, at)
-		width := displayCells(character, column, paint.editor.tabWidth, paint.editor.reps)
-		if column+width >= paint.firstColumn && column <= paint.lastColumn {
+		representation, represented := representationOf(paint.editor.reps, character)
+		width := displayCellsFor(character, column, paint.editor.tabWidth, representation, represented)
+		if !represented && column+width >= paint.firstColumn && column <= paint.lastColumn {
 			x := left + float32(column)*paint.cellWidth
 			centerY := y + paint.lineHeight/2
 			switch character {

@@ -113,6 +113,15 @@ type Config struct {
 	// next frame as soon as the last one is presented. Adapters that present
 	// without blocking must report their display interval instead.
 	SetFrameInterval func(interval time.Duration)
+	// FramePresented, when set together with SetFrameInterval, is called by the
+	// adapter on the window thread once it has finished with a frame the runtime
+	// handed to OnRedraw: it presented the frame, or found nothing to present.
+	// An adapter that reports an interval of zero must call it for every frame,
+	// because the runtime asks for the next frame only then: a loop that holds a
+	// frame message queued at all times makes Windows defer the window's mouse
+	// input until the animation ends. Adapters paced by a positive interval
+	// ignore it.
+	FramePresented func()
 	// Waker, when set together with OnRedraw, lets the runtime request one
 	// redraw from any goroutine without a parked reader goroutine.
 	Waker          *Waker
@@ -329,16 +338,21 @@ type TextLabel struct {
 	// rounds to whole logical pixels): within half a pixel either way. A backend that
 	// places glyphs at device-pixel positions, as the platform's own text does, draws
 	// the text OriginX, OriginY from the label's top left; the others ignore them.
-	OriginX   float32
-	OriginY   float32
-	FontSize  float32
-	Weight    float32
-	Italic    bool
-	Color     Color
-	Layer     uint16
-	Mono      bool
-	MonoFace  gfx.MonoFace
-	CellWidth float32
+	OriginX  float32
+	OriginY  float32
+	FontSize float32
+	Weight   float32
+	Italic   bool
+	Color    Color
+	Layer    uint16
+	// ShapesBefore is how many shape instances the frame painted before this
+	// label. Shapes and labels are kept apart for batching; a renderer merges
+	// them back into paint order at this index, splitting a shape batch a label
+	// falls inside.
+	ShapesBefore uint32
+	Mono         bool
+	MonoFace     gfx.MonoFace
+	CellWidth    float32
 	// Baseline, when nonzero, is the row of the label, counted from its top in logical
 	// pixels, on which a fixed-pitch line's glyphs stand: gfx.Canvas.MonoBaseline for the
 	// label's face, size and height, which is the font's own baseline in the line's cell,

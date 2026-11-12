@@ -30,3 +30,28 @@ func (editor *Editor) savePointIndex() *int {
 	}
 	return editor.journal.savePoint
 }
+
+// ClearChangeHistory forgets every undo and redo unit without changing the text
+// or the document's saved/dirty truth, and restarts a proven history producer as
+// a new generation. A document at its save point stays clean; an unsaved
+// document stays unsaved, with its save boundary no longer reachable. The
+// public ClearHistory keeps its existing rebasing semantics.
+func (editor *Editor) ClearChangeHistory() {
+	point := editor.savePointIndex()
+	dirty := point != nil && !editor.AtSavePoint()
+	editor.ClearHistory()
+	if point != nil {
+		if dirty {
+			// The boundary is no longer reachable in the new generation, so the
+			// document keeps reporting modified data instead of laundering it.
+			*point = -1
+		} else {
+			*point = 0
+		}
+	}
+	if dirty {
+		if history := editor.historyAvailable(); history != nil {
+			history.save = -1
+		}
+	}
+}

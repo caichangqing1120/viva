@@ -91,14 +91,7 @@ func (offscreen *Offscreen) Set(rectangles []render.Rectangle, labels []TextLabe
 		if memory != nil {
 			defer C.free(memory)
 		}
-		var copyMemory unsafe.Pointer
-		if input.CopyOverride {
-			copyMemory = textBytes(input.CopyText)
-			if copyMemory != nil {
-				defer C.free(copyMemory)
-			}
-		}
-		config = makeNativeTextInput(*input, memory, copyMemory)
+		config = makeNativeTextInput(*input, memory)
 	}
 	if C.viva_offscreen_set_text_input(offscreen.handle, config) != 0 {
 		return fmt.Errorf("darwin: offscreen text editor rasterization failed")

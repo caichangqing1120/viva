@@ -140,7 +140,7 @@ func (editor *Editor) TrackHistory() (cursor HistoryCursor, bootstrapBytes int, 
 		source:         source,
 		generation:     1,
 		current:        0,
-		save:           0,
+		save:           initialProducerSave(editor),
 		detach:         -1,
 		retainedFrom:   0,
 		retainedTo:     0,
@@ -206,6 +206,17 @@ func (history *historyJournal) context(current, retainedTo int, collecting bool)
 		RetainedFrom: history.retainedFrom, RetainedTo: retainedTo,
 		Collecting: collecting,
 	}
+}
+
+// initialProducerSave seeds the producer save marker for the first generation.
+// A save point that a proven reset already left unreachable must stay
+// unreachable, so the first frames do not claim the bytes are saved; without
+// saved-history tracking the established default (reachable at the start) holds.
+func initialProducerSave(editor *Editor) int {
+	if point := editor.savePointIndex(); point != nil && *point < 0 {
+		return -1
+	}
+	return 0
 }
 
 func (editor *Editor) historyAvailable() *historyJournal {

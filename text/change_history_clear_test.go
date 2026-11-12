@@ -141,3 +141,47 @@ func TestClearChangeHistoryKeepsCleanProducerSaveMarker(t *testing.T) {
 		t.Fatalf("clean document save marker = %d, want 0 (reachable at the generation start)", save)
 	}
 }
+
+func TestClearChangeHistoryBeforeTrackingKeepsProducerUnreachable(t *testing.T) {
+	editor := NewEditor("abc")
+	editor.SetSavePoint()
+	editor.MoveTo(3, false)
+	editor.Insert("d")
+	editor.ClearChangeHistory()
+	if editor.AtSavePoint() {
+		t.Fatal("clear laundered the modified document")
+	}
+	cursor, _, ok := editor.TrackHistory()
+	if !ok {
+		t.Fatal("producer must be bootstrappable after the reset")
+	}
+	editor.MoveTo(3, false)
+	editor.Insert("z")
+	frames, _, ok := editor.HistorySince(cursor)
+	if !ok || len(frames) != 1 || len(frames[0].Steps) == 0 {
+		t.Fatalf("first generation after a pre-tracking clear: ok=%v frames=%d", ok, len(frames))
+	}
+	if save := frames[0].Steps[0].Context.Save; save != -1 {
+		t.Fatalf("producer save marker = %d, want unreachable (-1) after a pre-tracking clear", save)
+	}
+}
+
+func TestClearChangeHistoryDiscardedBranchIsUnreachable(t *testing.T) {
+	editor := NewEditor("abc")
+	editor.SetSavePoint()
+	editor.MoveTo(3, false)
+	editor.Insert("d")
+	editor.SetSavePoint() // the boundary now lives at the edited state
+	editor.Undo()         // the boundary is only reachable through Redo
+	editor.Insert("e")    // branching discards that Redo branch
+	if editor.AtSavePoint() {
+		t.Fatal("precondition: the discarded boundary must be unreachable")
+	}
+	if editor.CanRedo() {
+		t.Fatal("precondition: the branch must be discarded")
+	}
+	editor.ClearChangeHistory()
+	if editor.AtSavePoint() {
+		t.Fatal("clear resurrected a discarded save point")
+	}
+}

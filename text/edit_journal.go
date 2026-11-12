@@ -13,13 +13,17 @@ type Edit struct {
 const EditJournalLimit = 1024
 
 type editJournal struct {
-	revision  uint64
-	entries   []Edit
-	oldest    int
-	unlimited bool
-	tracking  bool
-	savePoint *int
-	lines     *lineJournal
+	revision    uint64
+	entries     []Edit
+	oldest      int
+	unlimited   bool
+	tracking    bool
+	retainEqual bool
+	private     bool
+	savePoint   *int
+	lines       *lineJournal
+	history     *historyJournal
+	composition *compositionState
 }
 
 // TrackEdits enables a bounded mutation journal and returns its current cursor.
@@ -59,7 +63,10 @@ func (editor *Editor) EditsSince(cursor uint64, dst []Edit) ([]Edit, uint64, boo
 }
 
 func (editor *Editor) prepareEdit(start, end int, replacement []rune) Edit {
-	if editor.journal == nil || !editor.journal.tracking {
+	if editor.journal == nil {
+		return Edit{}
+	}
+	if !editor.journal.tracking && (editor.journal.history == nil || !editor.journal.history.available) {
 		return Edit{}
 	}
 	at, offset := editor.offsets.index, editor.offsets.offset
@@ -77,6 +84,11 @@ func (editor *Editor) prepareEdit(start, end int, replacement []rune) Edit {
 		offset -= runeBytes(editor.runes[at])
 	}
 	editor.offsets = offsetMemo{index: start, offset: offset}
+	if !editor.journal.tracking {
+		// The history producer needs the byte position even when the ordinary
+		// byte journal is off, but it must not create a byte entry.
+		return Edit{}
+	}
 	edit := Edit{Start: offset}
 	for _, character := range editor.runes[start:end] {
 		edit.Removed += runeBytes(character)
@@ -150,9 +162,14 @@ func (editor *Editor) recordBatchEdits(primitives []Edit, contexts []lineContext
 }
 
 func (editor *Editor) replaceHistory(edit *historyEdit, inverse bool) {
+	if editor.journal != nil {
+		editor.recordRetiresCompleted()
+	}
 	journal := editor.journal
-	contexts := editor.lineBatchContexts(edit.primitives)
-	if len(edit.primitives) > 0 {
+	batchPrimitives := edit.kind == editSeparate && len(edit.primitives) > 0
+	var contexts []lineContext
+	if batchPrimitives {
+		contexts = editor.lineBatchContexts(edit.primitives)
 		editor.journal = nil
 	}
 	if inverse {
@@ -161,5 +178,7 @@ func (editor *Editor) replaceHistory(edit *historyEdit, inverse bool) {
 		editor.replaceExact(edit.start, len(edit.removed), edit.inserted)
 	}
 	editor.journal = journal
-	editor.recordBatchEdits(edit.primitives, contexts, inverse)
+	if batchPrimitives {
+		editor.recordBatchEdits(edit.primitives, contexts, inverse)
+	}
 }

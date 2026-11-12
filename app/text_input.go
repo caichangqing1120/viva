@@ -20,6 +20,10 @@ type TextState struct {
 	Selection         TextRange
 	Composition       TextRange
 	Composing         bool
+	// TentativeComposition is the editor's opt-in capability snapshot, derived
+	// only from Editor.TentativeCompositionEnabled. It is distinct from the
+	// current UI Composing flag and false for disabled or passive owners.
+	TentativeComposition bool
 	// Redraw asks for a frame after the event although the editor looks the same,
 	// because the application changed something else in response. A terminal
 	// uses it when typed text appears ahead of the server's echo; ordinary
@@ -98,6 +102,12 @@ type TextEvent struct {
 	Replacement     TextRange
 	HasReplacement  bool
 	Command         TextCommand
+	// CompositionPhase tags an opt-in tentative-composition event. The zero
+	// value preserves the legacy event contract; the platform Apply consults
+	// the target editor's capability and never infers a phase from Kind.
+	CompositionPhase    text.CompositionPhase
+	ReplacementUTF16    text.UTF16Range
+	HasReplacementUTF16 bool
 }
 
 // TextInputContext describes the focused Canvas text-field hit.
@@ -208,11 +218,12 @@ func TextStateOf(editor *text.Editor) TextState {
 	selection := editor.Selection()
 	composition, composing := editor.Composition()
 	return TextState{
-		Value:             editor.String(),
-		Selection:         appTextRange(selection),
-		SelectionReversed: selection.Start != selection.End && editor.Caret() == selection.Start,
-		Composition:       appTextRange(composition),
-		Composing:         composing,
+		Value:                editor.String(),
+		Selection:            appTextRange(selection),
+		SelectionReversed:    selection.Start != selection.End && editor.Caret() == selection.Start,
+		Composition:          appTextRange(composition),
+		Composing:            composing,
+		TentativeComposition: editor.TentativeCompositionEnabled(),
 	}
 }
 
@@ -221,13 +232,16 @@ func TextStateOf(editor *text.Editor) TextState {
 // internal/platform rather than in a second copy here.
 func (event TextEvent) Apply(editor *text.Editor) {
 	platform.TextEvent{
-		Kind:            platform.TextEventKind(event.Kind),
-		Text:            event.Text,
-		Selection:       platformTextRange(event.Selection),
-		MarkedSelection: platformTextRange(event.MarkedSelection),
-		Replacement:     platformTextRange(event.Replacement),
-		HasReplacement:  event.HasReplacement,
-		Command:         platform.TextCommand(event.Command),
+		Kind:                platform.TextEventKind(event.Kind),
+		Text:                event.Text,
+		Selection:           platformTextRange(event.Selection),
+		MarkedSelection:     platformTextRange(event.MarkedSelection),
+		Replacement:         platformTextRange(event.Replacement),
+		HasReplacement:      event.HasReplacement,
+		Command:             platform.TextCommand(event.Command),
+		CompositionPhase:    event.CompositionPhase,
+		ReplacementUTF16:    event.ReplacementUTF16,
+		HasReplacementUTF16: event.HasReplacementUTF16,
 	}.Apply(editor)
 }
 

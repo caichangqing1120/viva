@@ -27,7 +27,9 @@ uint16_t vivaRectangleLayer(uintptr_t handle, size_t index) { return 0; }
 int vivaPressAt(uintptr_t handle, double x, double y) { return 0; }
 void vivaTextInput(uintptr_t handle, void *view, int kind, const unsigned char *utf8,
                   size_t length, int64_t start, int64_t selectedLength,
-                  int64_t replacementStart, int64_t replacementLength, int command) {}
+                  int64_t replacementStart, int64_t replacementLength, int command,
+                  int compositionPhase, int64_t replacementUTF16Start,
+                  int64_t replacementUTF16Length, int hasReplacementUTF16) {}
 
 // Exercise the native delegate without showing windows or activating the test.
 @interface DockTestApplication : NSApplication
@@ -82,6 +84,12 @@ static VivaAppDelegate *windowDelegate(int mode, uintptr_t handle) {
     [delegate setValue:@(handle) forKey:@"_callbackHandle"];
     [window release];
     return delegate;
+}
+
+void vivaTextCompositionLost(uintptr_t handle, void *view, int reason) {
+    (void)handle;
+    (void)view;
+    (void)reason;
 }
 
 int main(void) {

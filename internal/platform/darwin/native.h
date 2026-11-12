@@ -110,6 +110,9 @@ typedef struct {
     // The canvas layer the editor draws in: a surface on a higher layer (a
     // popup over the field) covers its caret and text.
     uint16_t layer;
+    // The application owns an opt-in tentative composition. Only this client
+    // may translate a native lost/discard into a tagged Cancel event.
+    int tentative_composition;
 } viva_text_input_config;
 
 // viva_text_run colors a stretch of a fixed-pitch label: the next `bytes` bytes
@@ -430,6 +433,8 @@ int viva_view_update_text(
     size_t marked_start,
     size_t marked_length,
     int has_marked_text,
+    int tentative_composition,
+    int ends_composition,
     int render
 );
 int viva_view_update_text_input(void *view, viva_text_input_config text_input);

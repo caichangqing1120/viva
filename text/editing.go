@@ -117,6 +117,7 @@ func WordRange(value string, index int) Range {
 // DeleteWord removes a selection or a word as one undo unit. Undo restores the
 // original caret, rather than an artificial selection used to delete the word.
 func (editor *Editor) DeleteWord(forward bool) {
+	editor.sealTentativeHistory()
 	editor.BreakUndoGroup()
 	if editor.Selection().Start != editor.Selection().End || editor.composing {
 		editor.DeleteBackward()
@@ -159,6 +160,7 @@ func (editor *Editor) MoveLineBoundary(end, extend bool) {
 // field wraps to are not lines here; a field that lays its own rows out moves
 // by them with MoveTo.
 func (editor *Editor) DeleteToLineBoundary(end bool) {
+	editor.sealTentativeHistory()
 	editor.BreakUndoGroup()
 	selection := editor.Selection()
 	if selection.Start != selection.End || editor.composing {

@@ -136,7 +136,7 @@ func (editor *Editor) ReplaceRangesWith(edits []Replacement, options ReplaceRang
 		position = edit.Range.End
 	}
 	changed := !slices.Equal(replacement, editor.runes[start:end])
-	if !changed && !options.ApplyUnchanged && editor.savePointIndex() == nil {
+	if !changed && !options.ApplyUnchanged && (len(primitives) == 0 || !editor.retainEqualEdits()) {
 		return nil
 	}
 	if options.Forward {

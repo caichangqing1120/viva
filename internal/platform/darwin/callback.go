@@ -597,6 +597,23 @@ func presentTextInput(state *runState, view unsafe.Pointer, update TextInputUpda
 		state.setTextInput(update.Input)
 		return nil
 	}
+	// A different target, or a state that drops the mark, replaces the editor
+	// that owned the old composition. Report the accepted physical Cancel to
+	// that still-current handler before swapping in the new one; a returned
+	// passive/disabled snapshot is a legacy discard and gets no tag. The frame
+	// already being presented supplies the redraw, so this path only updates
+	// the handler/native text.
+	if textInputReplacementEndsComposition(state.textState, state.textInput, update.Input) {
+		sameTarget := update.Input.Target == state.textInput.Target
+		if err := deliverCompositionCancel(state, view, false); err != nil {
+			return err
+		}
+		if sameTarget {
+			resolved := *update.Input
+			resolved.State = state.textState
+			update.Input = &resolved
+		}
+	}
 
 	var native C.viva_text_input_config
 	var memory unsafe.Pointer
@@ -643,6 +660,214 @@ func presentAccessibility(view unsafe.Pointer, nodes []AccessibilityNode) error 
 	return nil
 }
 
+// nativeTextEvent is the scalar native-to-Go text payload. It owns no pointer:
+// text is decoded for the callback, and every range is a copied integer, so no
+// native allocation or lifetime crosses the C ABI.
+type nativeTextEvent struct {
+	Kind              int
+	Text              string
+	Value             string
+	SelectedStart     int
+	SelectedLength    int
+	ReplacementStart  int
+	ReplacementLength int
+	Command           int
+	Phase             int
+	RawStart          int
+	RawLength         int
+	HasRawReplacement bool
+}
+
+// textEvent decodes the accepted legacy fields and, while the returned
+// capability snapshot is enabled, the opt-in composition phase and raw UTF-16
+// replacement. A disabled/passive snapshot stays on the exact legacy event.
+func (native nativeTextEvent) textEvent(tentative bool) TextEvent {
+	event := TextEvent{
+		Kind:    TextEventKind(native.Kind),
+		Text:    native.Text,
+		Command: TextCommand(native.Command),
+	}
+	if event.Kind == TextSetSelection {
+		event.Selection = utf16Range(native.Value, native.SelectedStart, native.SelectedLength)
+	}
+	if event.Kind == TextSetMarked {
+		event.MarkedSelection = utf16Range(native.Text, native.SelectedStart, native.SelectedLength)
+	}
+	if native.ReplacementStart >= 0 {
+		event.HasReplacement = true
+		event.Replacement = utf16Range(native.Value, native.ReplacementStart, native.ReplacementLength)
+	}
+	if tentative && native.Phase != int(text.CompositionNone) {
+		event.CompositionPhase = text.CompositionPhase(native.Phase)
+		if native.HasRawReplacement {
+			event.ReplacementUTF16 = text.UTF16Range{Start: native.RawStart, Length: native.RawLength}
+			event.HasReplacementUTF16 = true
+		}
+	}
+	return event
+}
+
+// textEventResolvesComposition reports whether Go is already handling an
+// explicit terminal phase. Such an event ends the owned tentative itself, so a
+// native mark it drops is not a second lost event.
+func textEventResolvesComposition(event TextEvent) bool {
+	switch event.CompositionPhase {
+	case text.CompositionResult, text.CompositionCommit, text.CompositionCancel, text.CompositionEmptyCommit:
+		return true
+	default:
+		return false
+	}
+}
+
+// textStatePushEndsComposition says whether a Go state push that dropped the
+// native mark already has an owner for that transition. An explicit terminal
+// phase does; a passive/disabled snapshot follows legacy discard. A live
+// tentative mark dropped without either is a lost composition the native side
+// must report.
+func textStatePushEndsComposition(event TextEvent, next TextState) bool {
+	return textEventResolvesComposition(event) || !next.TentativeComposition
+}
+
+// textInputReplacementEndsComposition reports whether a new text-input
+// snapshot replaces the editor that owned the previous composition. A target
+// change always does; the same target does when its returned state no longer
+// marks text. A nil or passive/disabled snapshot is the legacy discard case
+// and is left untagged.
+func textInputReplacementEndsComposition(previous TextState, current TextInput, next *TextInput) bool {
+	if next == nil || !previous.TentativeComposition || !previous.Composing || !next.State.TentativeComposition {
+		return false
+	}
+	if next.Target != current.Target {
+		return true
+	}
+	return !next.State.Composing
+}
+
+// deliverCompositionCancel reports AppKit's lost/discard of a live owned
+// tentative as the accepted physical CompositionCancel. It never fabricates a
+// phase for a passive or already-idle client.
+func deliverCompositionCancel(state *runState, view unsafe.Pointer, redraw bool) error {
+	if state == nil || state.textHandler == nil ||
+		!state.textState.TentativeComposition || !state.textState.Composing {
+		return nil
+	}
+	return deliverTextInputEvent(state, view, nativeTextEvent{
+		Kind:             int(TextSetMarked),
+		Text:             "",
+		ReplacementStart: -1,
+		Phase:            int(text.CompositionCancel),
+	}, redraw)
+}
+
+// deliverTextInput applies one decoded native event. It is separate from the
+// cgo export so the bridge's capability gate and field forwarding are testable
+// without a native view.
+func deliverTextInput(state *runState, view unsafe.Pointer, native nativeTextEvent) error {
+	return deliverTextInputEvent(state, view, native, true)
+}
+
+func deliverTextInputEvent(state *runState, view unsafe.Pointer, native nativeTextEvent, redraw bool) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
+			err = fmt.Errorf("darwin: text input handler panicked: %v", recovered)
+			state.err = err
+			C.viva_view_close(view)
+		}
+	}()
+
+	if state.textHandler == nil {
+		err = fmt.Errorf("darwin: native text event without a handler")
+		state.err = err
+		C.viva_view_close(view)
+		return err
+	}
+
+	event := native.textEvent(state.textState.TentativeComposition)
+
+	previous := state.textState
+	next, handlerErr := state.textHandler(event)
+	if handlerErr == nil {
+		handlerErr = validateTextState(next)
+	}
+	plan := planTextEvent(state.textInputActive && state.textInput.Terminal, previous, next)
+	next = next.WithoutRedraw() // a one-shot request, not editor state
+	if handlerErr == nil && plan.update {
+		// A terminal phase or a returned passive/disabled snapshot already owns
+		// the end of the mark; any other state replacement that drops a live
+		// owned mark is a lost composition. Native reports that case exactly
+		// once, and the deferred Cancel below keeps it out of this call stack.
+		endsComposition := textStatePushEndsComposition(event, next)
+		state.textUpdateDepth++
+		handlerErr = updateText(view, next, endsComposition, !redraw || state.redrawHandler == nil)
+		state.textUpdateDepth--
+		if handlerErr == nil {
+			if state.textCompositionLostPending {
+				handlerErr = state.reconcilePendingCompositionLoss(view)
+				next = state.textState
+			}
+		} else {
+			state.textCompositionLostPending = false
+		}
+	}
+	if handlerErr != nil {
+		state.err = handlerErr
+		C.viva_view_close(view)
+		return handlerErr
+	}
+	state.textState = next
+	if state.textInputActive {
+		state.textInput.State = next
+	}
+	if redraw && state.redrawHandler != nil && plan.render {
+		state.textEventRedraw = plan.render
+		frame, redrawErr := state.redrawHandler()
+		if redrawErr == nil {
+			redrawErr = presentFrame(state, view, frame, false)
+		}
+		state.textEventRedraw = false
+		if redrawErr != nil {
+			state.err = redrawErr
+			C.viva_view_close(view)
+			return redrawErr
+		}
+	}
+	return nil
+}
+
+// reconcilePendingCompositionLoss flushes at most one deferred lost fabric
+// after a state push. A native updateText reports it while Go is still inside
+// that push; delivering immediately would re-enter the handler and updateText.
+func (state *runState) reconcilePendingCompositionLoss(view unsafe.Pointer) error {
+	if !state.textCompositionLostPending {
+		return nil
+	}
+	state.textCompositionLostPending = false
+	return deliverCompositionCancel(state, view, false)
+}
+
+// compositionLost receives a native lost/discard report. During updateText the
+// native side is still inside this Go state push, so defer rather than
+// re-entering the handler and updateText.
+func (state *runState) compositionLost(view unsafe.Pointer) {
+	if state == nil {
+		return
+	}
+	if state.textUpdateDepth > 0 {
+		state.textCompositionLostPending = true
+		return
+	}
+	_ = deliverCompositionCancel(state, view, true)
+}
+
+//export vivaTextCompositionLost
+func vivaTextCompositionLost(handle C.uintptr_t, view unsafe.Pointer, reason C.int) {
+	if reason != 1 {
+		return
+	}
+	cgo.Handle(handle).Value().(*runState).compositionLost(view)
+}
+
 //export vivaTextInput
 func vivaTextInput(
 	handle C.uintptr_t,
@@ -655,81 +880,30 @@ func vivaTextInput(
 	replacementStart C.int64_t,
 	replacementLength C.int64_t,
 	command C.int,
+	compositionPhase C.int,
+	replacementUTF16Start C.int64_t,
+	replacementUTF16Length C.int64_t,
+	hasReplacementUTF16 C.int,
 ) {
-	state := cgo.Handle(handle).Value().(*runState)
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			platform.ReportFault("darwin: AppKit callback", recovered)
-			state.err = fmt.Errorf("darwin: text input handler panicked: %v", recovered)
-			C.viva_view_close(view)
-		}
-	}()
-
-	if state.textHandler == nil {
-		state.err = fmt.Errorf("darwin: native text event without a handler")
-		C.viva_view_close(view)
-		return
-	}
-
 	value := ""
 	if utf8Length > 0 {
 		value = C.GoStringN((*C.char)(unsafe.Pointer(utf8)), C.int(utf8Length))
 	}
-	event := TextEvent{
-		Kind:    TextEventKind(kind),
-		Text:    value,
-		Command: TextCommand(command),
-	}
-	if event.Kind == TextSetSelection {
-		event.Selection = utf16Range(
-			state.textState.Value,
-			int(selectedStart),
-			int(selectedLength),
-		)
-	}
-	if event.Kind == TextSetMarked {
-		event.MarkedSelection = utf16Range(value, int(selectedStart), int(selectedLength))
-	}
-	if replacementStart >= 0 {
-		event.HasReplacement = true
-		event.Replacement = utf16Range(
-			state.textState.Value,
-			int(replacementStart),
-			int(replacementLength),
-		)
-	}
-
-	previous := state.textState
-	next, err := state.textHandler(event)
-	if err == nil {
-		err = validateTextState(next)
-	}
-	plan := planTextEvent(state.textInputActive && state.textInput.Terminal, previous, next)
-	next = next.WithoutRedraw() // a one-shot request, not editor state
-	if err == nil && plan.update {
-		err = updateText(view, next, state.redrawHandler == nil)
-	}
-	if err != nil {
-		state.err = err
-		C.viva_view_close(view)
-		return
-	}
-	state.textState = next
-	if state.textInputActive {
-		state.textInput.State = next
-	}
-	if state.redrawHandler != nil && plan.render {
-		state.textEventRedraw = plan.render
-		frame, redrawErr := state.redrawHandler()
-		if redrawErr == nil {
-			redrawErr = presentFrame(state, view, frame, false)
-		}
-		state.textEventRedraw = false
-		if redrawErr != nil {
-			state.err = redrawErr
-			C.viva_view_close(view)
-		}
-	}
+	state := cgo.Handle(handle).Value().(*runState)
+	deliverTextInput(state, view, nativeTextEvent{
+		Kind:              int(kind),
+		Text:              value,
+		Value:             state.textState.Value,
+		SelectedStart:     int(selectedStart),
+		SelectedLength:    int(selectedLength),
+		ReplacementStart:  int(replacementStart),
+		ReplacementLength: int(replacementLength),
+		Command:           int(command),
+		Phase:             int(compositionPhase),
+		RawStart:          int(replacementUTF16Start),
+		RawLength:         int(replacementUTF16Length),
+		HasRawReplacement: hasReplacementUTF16 != 0,
+	})
 }
 
 func utf16Range(value string, start, length int) text.Range {
@@ -746,7 +920,7 @@ func utf16Range(value string, start, length int) text.Range {
 	}
 }
 
-func updateText(view unsafe.Pointer, state TextState, render bool) error {
+func updateText(view unsafe.Pointer, state TextState, endsComposition bool, render bool) error {
 	editor := text.NewEditor(state.Value)
 	selectedStart := editor.RuneIndexToUTF16(state.Selection.Start)
 	selectedEnd := editor.RuneIndexToUTF16(state.Selection.End)
@@ -766,6 +940,8 @@ func updateText(view unsafe.Pointer, state TextState, render bool) error {
 		C.size_t(markedStart),
 		C.size_t(markedEnd-markedStart),
 		C.int(boolInt(state.Composing)),
+		C.int(boolInt(state.TentativeComposition)),
+		C.int(boolInt(endsComposition)),
 		C.int(boolInt(render)),
 	)
 	if status != 0 {

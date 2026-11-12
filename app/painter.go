@@ -1276,11 +1276,12 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 			Blue: float64(tint.Blue), Alpha: float64(tint.Alpha),
 		},
 		State: platform.TextState{
-			Value:             input.State.Value,
-			Selection:         platformTextRange(input.State.Selection),
-			SelectionReversed: input.State.SelectionReversed,
-			Composition:       platformTextRange(input.State.Composition),
-			Composing:         input.State.Composing,
+			Value:                input.State.Value,
+			Selection:            platformTextRange(input.State.Selection),
+			SelectionReversed:    input.State.SelectionReversed,
+			Composition:          platformTextRange(input.State.Composition),
+			Composing:            input.State.Composing,
+			TentativeComposition: input.State.TentativeComposition,
 		},
 		OnEvent: painter.onTextEvent,
 	}
@@ -1310,7 +1311,10 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 		Selection:       appTextRange(event.Selection),
 		MarkedSelection: appTextRange(event.MarkedSelection),
 		Replacement:     appTextRange(event.Replacement), HasReplacement: event.HasReplacement,
-		Command: TextCommand(event.Command),
+		Command:             TextCommand(event.Command),
+		CompositionPhase:    event.CompositionPhase,
+		ReplacementUTF16:    event.ReplacementUTF16,
+		HasReplacementUTF16: event.HasReplacementUTF16,
 	}
 	if !painter.nativeText.Multiline && !painter.nativeText.Terminal &&
 		(event.Kind == platform.TextPaste || event.Kind == platform.TextInsert) && event.Text != "" {
@@ -1342,12 +1346,13 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 	}
 	painter.activeText.State = next
 	native := platform.TextState{
-		Value:             next.Value,
-		Selection:         platformTextRange(next.Selection),
-		SelectionReversed: next.SelectionReversed,
-		Composition:       platformTextRange(next.Composition),
-		Composing:         next.Composing,
-		Redraw:            next.Redraw,
+		Value:                next.Value,
+		Selection:            platformTextRange(next.Selection),
+		SelectionReversed:    next.SelectionReversed,
+		Composition:          platformTextRange(next.Composition),
+		Composing:            next.Composing,
+		TentativeComposition: next.TentativeComposition,
+		Redraw:               next.Redraw,
 	}
 	// What the platform mirrors back never carries the one-shot request.
 	painter.nativeText.State = native.WithoutRedraw()

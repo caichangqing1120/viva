@@ -133,6 +133,14 @@ func (editor *Editor) String() string {
 // CommittedString returns the text before marked input until the IME commits it.
 func (editor *Editor) CommittedString() string {
 	if editor.composing {
+		if state := editor.compositionState(); state != nil && state.active && state.enabled && state.ops.committed != nil {
+			// An owned tentative has real rollback units, not the legacy
+			// compositionOriginal snapshot. Reconstruct the committed buffer from
+			// those units without changing marking, selection or Cancel state.
+			if committed, ok := state.ops.committed(state); ok {
+				return committed
+			}
+		}
 		if !editor.compositionBaseValid {
 			committed := make([]rune, 0, len(editor.runes)-editor.composition.End+editor.composition.Start+len(editor.compositionOriginal))
 			committed = append(committed, editor.runes[:editor.composition.Start]...)
@@ -157,6 +165,7 @@ func (editor *Editor) CommittedString() string {
 // empty six-digit editor leaves "123456". Text already present is left alone,
 // and deleting is never restricted.
 func (editor *Editor) Restrict(accept func(rune) bool, maxRunes int) {
+	editor.disableTentativeForConfiguration()
 	editor.accept = accept
 	editor.maxRunes = maxRunes
 }
@@ -167,7 +176,9 @@ func (editor *Editor) Restrict(accept func(rune) bool, maxRunes int) {
 // rune instead of being refused: the behavior of a fixed-width field such as a
 // one-time code, where the caret sits on a slot and the next digit fills it. A
 // selection is replaced as always, and runes the restriction rejects delete
-// nothing.
+// nothing. With the optional tentative capability the setter changes only this
+// flag, including during a live owned tentative: rollback still uses the units
+// actually recorded under the old flag and the next event uses the new one.
 func (editor *Editor) SetOverwrite(overwrite bool) {
 	editor.overwrite = overwrite
 }
@@ -192,8 +203,12 @@ func (editor *Editor) Caret() int {
 // Start is after its End is a selection made backwards: the caret is at the
 // Start, as Caret reports, and Selection still returns it in order.
 func (editor *Editor) SetSelection(selection Range) {
+	editor.sealTentativeHistory()
 	anchor := clamp(selection.Start, 0, len(editor.runes))
 	caret := clamp(selection.End, 0, len(editor.runes))
+	if editor.composing {
+		editor.invalidateHistory()
+	}
 	if editor.anchor != anchor || editor.caret != caret || editor.composing {
 		editor.BreakUndoGroup()
 	}
@@ -207,7 +222,11 @@ func (editor *Editor) SetSelection(selection Range) {
 // editor applies a movement the text itself does not know, such as one line up
 // in text a view has wrapped. It ends active composition.
 func (editor *Editor) MoveTo(index int, extend bool) {
+	editor.sealTentativeHistory()
 	editor.BreakUndoGroup()
+	if editor.composing {
+		editor.invalidateHistory()
+	}
 	index = clamp(index, 0, len(editor.runes))
 	if extend {
 		editor.caret = index
@@ -225,9 +244,17 @@ func (editor *Editor) Composition() (Range, bool) {
 // Insert replaces the current selection or composition and places the caret
 // after inserted text.
 func (editor *Editor) Insert(value string) {
-	target := editor.Selection()
 	wasComposing := editor.composing
+	target := editor.Selection()
 	if wasComposing {
+		// An owned tentative has no redo suffix: its first scalar already
+		// truncated redo. Clearing the private active boundary here, before the
+		// existing composing body invalidates producer metadata and replaces
+		// marked text, is the same legacy seal without a dormant-path call.
+		if journal := editor.journal; journal != nil && journal.composition != nil {
+			journal.composition.active = false
+		}
+		editor.invalidateHistory()
 		target = editor.composition
 	}
 	overwrite := editor.overwrite && !wasComposing && target.Start == target.End
@@ -252,6 +279,7 @@ func (editor *Editor) Insert(value string) {
 
 // Paste inserts text as one undo unit, separate from adjacent typing.
 func (editor *Editor) Paste(value string) {
+	editor.sealTentativeHistory()
 	editor.BreakUndoGroup()
 	editor.Insert(value)
 	editor.BreakUndoGroup()
@@ -260,6 +288,8 @@ func (editor *Editor) Paste(value string) {
 // SetMarkedText replaces the current composition or selection with marked
 // text. selected is relative to the marked text, matching native IME APIs.
 func (editor *Editor) SetMarkedText(value string, selected Range) {
+	editor.sealTentativeHistory()
+	editor.invalidateHistory()
 	wasComposing := editor.composing
 	target := editor.Selection()
 	if wasComposing {
@@ -291,12 +321,17 @@ func (editor *Editor) SetMarkedText(value string, selected Range) {
 
 // Unmark commits the current marked text without changing it.
 func (editor *Editor) Unmark() {
+	editor.sealTentativeHistory()
+	if editor.composing {
+		editor.invalidateHistory()
+	}
 	editor.composing = false
 	editor.BreakUndoGroup()
 }
 
 // DeleteBackward removes the selection or previous grapheme cluster.
 func (editor *Editor) DeleteBackward() bool {
+	editor.sealTentativeHistory()
 	if editor.deleteSelectionOrComposition() {
 		return true
 	}
@@ -318,6 +353,7 @@ func (editor *Editor) DeleteBackward() bool {
 
 // DeleteForward removes the selection or next grapheme cluster.
 func (editor *Editor) DeleteForward() bool {
+	editor.sealTentativeHistory()
 	if editor.deleteSelectionOrComposition() {
 		return true
 	}
@@ -337,7 +373,11 @@ func (editor *Editor) DeleteForward() bool {
 // the previous one, except in a line with right-to-left text, where the order is the one
 // UAX #9 displays it in.
 func (editor *Editor) MoveLeft(extend bool) bool {
+	editor.sealTentativeHistory()
 	editor.BreakUndoGroup()
+	if editor.composing {
+		editor.invalidateHistory()
+	}
 	editor.composing = false
 	selection := editor.Selection()
 	if !extend && selection.Start != selection.End {
@@ -360,7 +400,11 @@ func (editor *Editor) MoveLeft(extend bool) bool {
 // MoveRight moves or extends selection by one grapheme cluster to the right on the screen
 // (see MoveLeft).
 func (editor *Editor) MoveRight(extend bool) bool {
+	editor.sealTentativeHistory()
 	editor.BreakUndoGroup()
+	if editor.composing {
+		editor.invalidateHistory()
+	}
 	editor.composing = false
 	selection := editor.Selection()
 	if !extend && selection.Start != selection.End {
@@ -420,6 +464,7 @@ func (editor *Editor) UTF16ToRuneIndex(units int) int {
 func (editor *Editor) deleteSelectionOrComposition() bool {
 	target := editor.Selection()
 	if editor.composing {
+		editor.invalidateHistory()
 		target = editor.composition
 	}
 	if target.Start == target.End {
@@ -444,8 +489,14 @@ func (editor *Editor) collapse(index int) {
 // the replacement began, which differs from target.Start only when a full field
 // had to replace its last rune.
 func (editor *Editor) replace(target Range, value string, overwrite bool) textChange {
+	return editor.replaceRunes(target, []rune(value), overwrite)
+}
+
+// replaceRunes is the owned-rune form of replace. Default callers pass a fresh
+// slice; the explicit composition path can pass a slice of its event text
+// without allocating a string per scalar.
+func (editor *Editor) replaceRunes(target Range, replacement []rune, overwrite bool) textChange {
 	target = normalizeRange(target, len(editor.runes))
-	replacement := []rune(value)
 	if editor.accept != nil {
 		kept := replacement[:0]
 		for _, r := range replacement {
@@ -509,6 +560,9 @@ func (editor *Editor) CanRedo() bool { return editor.historyIndex < len(editor.h
 
 // Undo restores the text and selection before the latest undo unit.
 func (editor *Editor) Undo() bool {
+	if editor.composing && editor.tentativeActive() {
+		return false
+	}
 	if !editor.CanUndo() {
 		return false
 	}
@@ -517,11 +571,17 @@ func (editor *Editor) Undo() bool {
 	editor.replaceHistory(edit, true)
 	editor.restoreSelection(edit.before)
 	editor.BreakUndoGroup()
+	if history := editor.historyState(); history != nil {
+		history.ops.replay(history, editor.historyIndex, true)
+	}
 	return true
 }
 
 // Redo reapplies the next undone edit and restores its resulting selection.
 func (editor *Editor) Redo() bool {
+	if editor.composing && editor.tentativeActive() {
+		return false
+	}
 	if !editor.CanRedo() {
 		return false
 	}
@@ -530,6 +590,9 @@ func (editor *Editor) Redo() bool {
 	editor.restoreSelection(edit.after)
 	editor.historyIndex++
 	editor.BreakUndoGroup()
+	if history := editor.historyState(); history != nil {
+		history.ops.replay(history, editor.historyIndex-1, false)
+	}
 	return true
 }
 
@@ -538,8 +601,23 @@ func (editor *Editor) Redo() bool {
 // automatically; applications may call it at another semantic boundary.
 func (editor *Editor) BreakUndoGroup() { editor.coalescing = 0 }
 
-// ClearHistory forgets every undo and redo unit without changing the text.
-func (editor *Editor) ClearHistory() {
+// ClearHistory forgets every undo and redo unit without changing the text. A
+// proven live history producer starts a new generation/bootstrap, retaining the
+// live detach qualification; an unknown context stays unavailable.
+func (editor *Editor) ClearHistory() { editor.clearHistory(true) }
+
+func (editor *Editor) clearHistory(manual bool) {
+	if state := editor.compositionState(); editor.composing || (state != nil && state.active) {
+		// Active Clear is a history reset, not a Cancel/Commit. It drops all
+		// ordinary/tentative ownership, keeps visible bytes/marking and never
+		// rebootstraps a producer for an unowned UI composition.
+		if state != nil {
+			state.active = false
+		}
+		editor.invalidateHistory()
+	} else if history := editor.historyState(); history != nil {
+		history.ops.clear(history, manual)
+	}
 	if editor.journal != nil && editor.journal.lines != nil {
 		editor.journal.lines.batches = nil
 		editor.journal.lines.delivery = nil
@@ -548,6 +626,21 @@ func (editor *Editor) ClearHistory() {
 	editor.historyIndex = 0
 	editor.historyRunes = 0
 	editor.coalescing = 0
+	if state := editor.compositionState(); state != nil {
+		// Clear is an explicit history reset: it drops units and all retention
+		// boundaries, including a passive completed descriptor, while keeping
+		// visible bytes and (for an enabled receiver) the capability itself.
+		state.live = false
+		state.completed = false
+		state.passive = false
+		state.eventStart = -1
+		state.completedStart = -1
+		state.unitStart = -1
+		state.cost = compositionHeaderRunes
+		if !state.enabled && !state.active {
+			editor.journal.composition = nil
+		}
+	}
 	if point := editor.savePointIndex(); point != nil {
 		*point = 0
 	}
@@ -564,18 +657,30 @@ func (editor *Editor) restoreSelection(selection editorSelection) {
 }
 
 func (editor *Editor) record(change textChange, before, after editorSelection, kind editKind) {
-	if runesEqual(change.removed, change.inserted) && (len(change.removed) == 0 || editor.savePointIndex() == nil) {
+	if runesEqual(change.removed, change.inserted) && (len(change.removed) == 0 || !editor.retainEqualEdits()) {
 		return
 	}
 	editor.dropRedo()
-	if editor.merge(change, before, after, kind) {
+	var primitive Edit
+	historyOwned := false
+	if kind == editComposition {
+		editor.invalidateHistory()
+	} else if history := editor.historyState(); history != nil {
+		primitive, historyOwned = history.ops.record(history, change, kind)
+	}
+	unitOwned := historyOwned && kind != editSeparate
+	if editor.merge(change, before, after, kind, primitive, unitOwned) {
 		editor.trimHistory()
 		return
 	}
-	editor.appendHistory(historyEdit{
+	edit := historyEdit{
 		start: change.start, removed: change.removed, inserted: change.inserted,
 		before: before, after: after, kind: kind,
-	})
+	}
+	if unitOwned {
+		edit.primitives = []Edit{primitive}
+	}
+	editor.appendHistory(edit)
 }
 
 func (editor *Editor) recordWithPrimitives(change textChange, before, after editorSelection, kind editKind, primitives []Edit) {
@@ -583,10 +688,13 @@ func (editor *Editor) recordWithPrimitives(change textChange, before, after edit
 		editor.record(change, before, after, kind)
 		return
 	}
-	if runesEqual(change.removed, change.inserted) && editor.savePointIndex() == nil {
+	if runesEqual(change.removed, change.inserted) && !(editor.retainEqualEdits() || editor.compositionRetainEqual()) {
 		return
 	}
 	editor.dropRedo()
+	if history := editor.historyState(); history != nil {
+		history.ops.capturePrimitives(history, primitives)
+	}
 	editor.appendHistory(historyEdit{
 		start: change.start, removed: change.removed, inserted: change.inserted,
 		before: before, after: after, kind: kind,
@@ -597,7 +705,7 @@ func (editor *Editor) recordWithPrimitives(change textChange, before, after edit
 func (editor *Editor) appendHistory(edit historyEdit) {
 	editor.history = append(editor.history, edit)
 	editor.historyIndex = len(editor.history)
-	editor.historyRunes += edit.retainedRunes()
+	editor.historyRunes += editor.historyUnitRunes(&edit)
 	if edit.kind == editSeparate {
 		editor.coalescing = 0
 	} else {
@@ -606,7 +714,7 @@ func (editor *Editor) appendHistory(edit historyEdit) {
 	editor.trimHistory()
 }
 
-func (editor *Editor) merge(change textChange, before, after editorSelection, kind editKind) bool {
+func (editor *Editor) merge(change textChange, before, after editorSelection, kind editKind, primitive Edit, historyOwned bool) bool {
 	if editor.coalescing != kind || editor.historyIndex == 0 || editor.historyIndex != len(editor.history) {
 		return false
 	}
@@ -649,6 +757,11 @@ func (editor *Editor) merge(change textChange, before, after editorSelection, ki
 	default:
 		return false
 	}
+	if historyOwned {
+		capacity := cap(previous.primitives)
+		previous.primitives = append(previous.primitives, primitive)
+		editor.historyRunes += (cap(previous.primitives) - capacity) * historyPrimitiveRunes
+	}
 	previous.after = after
 	return true
 }
@@ -664,41 +777,127 @@ func (editor *Editor) discardRedo() {
 		*point = -1
 	}
 	for index := editor.historyIndex; index < len(editor.history); index++ {
-		editor.historyRunes -= editor.history[index].retainedRunes() + editor.forgetLineBatch(&editor.history[index])
+		editor.historyRunes -= editor.historyUnitRunes(&editor.history[index]) + editor.forgetLineBatch(&editor.history[index])
 	}
 	clear(editor.history[editor.historyIndex:])
 	editor.history = editor.history[:editor.historyIndex]
 }
 
 func (editor *Editor) trimHistory() {
-	// The newest unit is always kept, unless it alone is beyond what is worth
-	// keeping.
+	journal := editor.journal
+	var state *compositionState
+	if journal != nil {
+		state = journal.composition
+		if state != nil && state.completed {
+			// The next accepted actual mutation retires the previous completed
+			// action before ordinary limits apply. trimHistory only runs from an
+			// accepted append/merge, never from a refusal, no-op or read.
+			state.completed = false
+			state.completedStart = -1
+			state.passive = false
+			state.cost = compositionHeaderRunes
+			if extra := cap(editor.history) - maxHistoryEntries; extra > 0 {
+				state.cost += extra * historyEditRunes
+			}
+			if !state.enabled && !state.live && !state.active && cap(editor.history) <= maxHistoryEntries {
+				journal.composition = nil
+				state = nil
+			}
+		}
+	}
+	if history := editor.historyState(); history != nil {
+		history.ops.enforce(history)
+	}
+	// A live tentative suffix, the current atomic event and one newest completed
+	// action are never trim candidates. Older ordinary prefixes may be removed
+	// and their physical indices repaired; producer metadata invalidates when an
+	// unproven prefix disappears.
+	protected := -1
+	if state != nil {
+		if state.live || state.active || state.pending {
+			protected = state.eventStart
+			if protected < 0 || (state.unitStart >= 0 && state.unitStart < protected) {
+				protected = state.unitStart
+			}
+		}
+		if state.completed && (protected < 0 || (state.completedStart >= 0 && state.completedStart < protected)) {
+			protected = state.completedStart
+		}
+	}
 	remove := 0
-	for len(editor.history)-remove > 1 && (len(editor.history)-remove > maxHistoryEntries || editor.historyRunes > maxHistoryRunes) {
+	limit := len(editor.history) - 1
+	if protected >= 0 && protected < limit {
+		limit = protected
+	}
+	for remove < limit {
+		remaining := len(editor.history) - remove
+		if remaining <= maxHistoryEntries {
+			cost := editor.historyCost()
+			if state != nil && state.ops.trimCost != nil {
+				cost = state.ops.trimCost(state, remaining)
+			}
+			if cost <= maxHistoryRunes {
+				break
+			}
+		}
 		edit := editor.history[remove]
-		editor.historyRunes -= edit.retainedRunes() + editor.forgetLineBatch(&editor.history[remove])
+		editor.historyRunes -= editor.historyUnitRunes(&edit) + editor.forgetLineBatch(&editor.history[remove])
 		remove++
 	}
-	if len(editor.history)-remove == 1 && editor.historyRunes > maxSingleEditRunes {
-		editor.ClearHistory()
-		if point := editor.savePointIndex(); point != nil {
-			*point = -1
+	if remove > 0 {
+		editor.invalidateHistoryFrom(remove)
+		if point := editor.savePointIndex(); point != nil && *point >= 0 {
+			*point -= remove
+			if *point < 0 {
+				*point = -1
+			}
+		}
+		copy(editor.history, editor.history[remove:])
+		clear(editor.history[len(editor.history)-remove:])
+		editor.history = editor.history[:len(editor.history)-remove]
+		editor.historyIndex = max(0, editor.historyIndex-remove)
+		if state != nil {
+			if state.eventStart >= 0 {
+				state.eventStart = max(0, state.eventStart-remove)
+			}
+			if state.unitStart >= 0 {
+				state.unitStart = max(0, state.unitStart-remove)
+			}
+			if state.completedStart >= 0 {
+				state.completedStart = max(0, state.completedStart-remove)
+			}
+		}
+	}
+	if state != nil && state.ops.settle != nil {
+		state.ops.settle(state)
+		if journal.composition != state {
+			state = nil
+		}
+	}
+	if editor.historyCost() <= maxSingleEditRunes {
+		return
+	}
+	if state != nil && state.retentionActive() {
+		// The retained physical event must stay cancelable/Undoable. Release
+		// producer metadata instead of clearing accepted physical work.
+		if cap(editor.history) != len(editor.history) {
+			next := make([]historyEdit, len(editor.history))
+			copy(next, editor.history)
+			editor.history = next
+			state.cost = compositionHeaderRunes
+			state.cost += cap(editor.history) * historyEditRunes
+		}
+		if editor.historyCost() > maxSingleEditRunes {
+			editor.invalidateHistory()
 		}
 		return
 	}
-	if remove == 0 {
-		return
+	// This is budget failure, not a manual live Clear: it must invalidate the
+	// producer rather than create a fresh complete-looking bootstrap.
+	editor.clearHistory(false)
+	if point := editor.savePointIndex(); point != nil {
+		*point = -1
 	}
-	if point := editor.savePointIndex(); point != nil && *point >= 0 {
-		*point -= remove
-		if *point < 0 {
-			*point = -1
-		}
-	}
-	copy(editor.history, editor.history[remove:])
-	clear(editor.history[len(editor.history)-remove:])
-	editor.history = editor.history[:len(editor.history)-remove]
-	editor.historyIndex = max(0, editor.historyIndex-remove)
 }
 
 func (editor *Editor) replaceExact(start, removed int, replacement []rune) {

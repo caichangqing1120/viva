@@ -11,6 +11,9 @@ func (editor *Editor) SetSavePoint() {
 		editor.journal.savePoint = new(int)
 	}
 	*editor.journal.savePoint = editor.historyIndex
+	if history := editor.historyState(); history != nil {
+		history.ops.save(history)
+	}
 	editor.BreakUndoGroup()
 }
 

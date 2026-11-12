@@ -40,7 +40,9 @@ uint16_t vivaRectangleLayer(uintptr_t handle, size_t index) { return 0; }
 int vivaPressAt(uintptr_t handle, double x, double y) { return 0; }
 void vivaTextInput(uintptr_t handle, void *view, int kind, const unsigned char *utf8,
                   size_t length, int64_t start, int64_t selectedLength,
-                  int64_t replacementStart, int64_t replacementLength, int command) {}
+                  int64_t replacementStart, int64_t replacementLength, int command,
+                  int compositionPhase, int64_t replacementUTF16Start,
+                  int64_t replacementUTF16Length, int hasReplacementUTF16) {}
 
 
 // A flagsChanged event for a modifier key, as AppKit makes one: the device
@@ -49,6 +51,12 @@ static NSEvent *flags_event(unsigned short key_code, NSEventModifierFlags flags)
     return [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:flags
                            timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@""
                            isARepeat:NO keyCode:key_code];
+}
+
+void vivaTextCompositionLost(uintptr_t handle, void *view, int reason) {
+    (void)handle;
+    (void)view;
+    (void)reason;
 }
 
 int main(void) {

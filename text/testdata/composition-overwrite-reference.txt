@@ -1,0 +1,80 @@
+ascii0-before text=abc len=3 cur=0 act=0 save=0 undo=0 redo=0
+ascii0-after text=Xbc len=3 cur=2 act=2 save=0 undo=1 redo=0
+ascii0-undo1 text=abc cur=0 act=2 delta=2 undo=0 redo=1
+bmp-caret0-after text=Xéb len=4 cur=2 act=2 save=0 undo=1 redo=0
+bmp-caret0-undo1 text=aéb cur=0 act=2 delta=2 undo=0 redo=1
+astral-caret0-after text=X𝄞b len=6 cur=2 act=2 save=0 undo=1 redo=0
+astral-caret0-undo1 text=a𝄞b cur=0 act=2 delta=2 undo=0 redo=1
+bmp-caret1-after text=aXb len=3 cur=2 act=2 save=0 undo=1 redo=0
+bmp-caret1-undo1 text=aéb cur=0 act=2 delta=2 undo=0 redo=1
+astral-caret1-after text=aXb len=3 cur=2 act=2 save=0 undo=1 redo=0
+astral-caret1-undo1 text=a𝄞b cur=0 act=2 delta=2 undo=0 redo=1
+combining-caret1-after text=aXb len=3 cur=2 act=2 save=0 undo=1 redo=0
+combining-caret1-undo1 text=áb cur=0 act=2 delta=2 undo=0 redo=1
+combining-caret0-after text=X́b len=4 cur=2 act=2 save=0 undo=1 redo=0
+combining-caret0-undo1 text=áb cur=0 act=2 delta=2 undo=0 redo=1
+lf-eol-after text=abX
+cd len=6 cur=1 act=1 save=0 undo=1 redo=0
+lf-eol-undo1 text=ab
+cd cur=0 act=1 delta=1 undo=0 redo=1
+crlf-eol-after text=abX
+cd len=7 cur=1 act=1 save=0 undo=1 redo=0
+crlf-eol-undo1 text=ab
+cd cur=0 act=1 delta=1 undo=0 redo=1
+eof-after text=abcX len=4 cur=1 act=1 save=0 undo=1 redo=0
+eof-undo1 text=abc cur=0 act=1 delta=1 undo=0 redo=1
+selection-bc-XY-after text=aXYef len=5 cur=4 act=4 save=0 undo=1 redo=0
+selection-bc-XY-undo1 text=aXdef cur=2 act=4 delta=2 undo=1 redo=1
+selection-bc-XY-undo2 text=abcdef cur=0 act=4 delta=2 undo=0 redo=1
+selection-ab-eol-after text=XY
+cd len=5 cur=3 act=3 save=0 undo=1 redo=0
+raw-multiscalar-after text=XYbc len=4 cur=2 act=2 save=0 undo=1 redo=0
+raw-multiscalar-undo1 text=abc cur=0 act=2 delta=2 undo=0 redo=1
+preedit-x text=axc len=3 cur=2 act=2 save=0 undo=1 redo=0
+preedit-x-cancel text=abc len=3 cur=0 act=0 save=0 undo=0 redo=0
+preedit-yz text=ayz len=3 cur=4 act=4 save=0 undo=1 redo=0
+preedit-yz-undo1 text=ayc cur=2 act=4 delta=2 undo=1 redo=1
+preedit-yz-undo2 text=abc cur=0 act=4 delta=2 undo=0 redo=1
+preedit-yz-cancel text=abc len=3 cur=0 act=0 save=0 undo=0 redo=0
+commit-before text=axy len=3 cur=4 act=4 save=0 undo=1 redo=0
+commit-after text=axy len=3 cur=4 act=4 save=0 undo=1 redo=0
+commit-undo1 text=axc cur=2 act=4 delta=2 undo=1 redo=1
+commit-undo2 text=abc cur=0 act=4 delta=2 undo=0 redo=1
+result-preedit-x text=axc len=3 cur=2 act=2 save=0 undo=1 redo=0
+result-RS-after-rollback text=aRS len=3 cur=4 act=4 save=0 undo=1 redo=0
+result-RS-undo1 text=aRc cur=2 act=4 delta=2 undo=1 redo=1
+result-RS-undo2 text=abc cur=0 act=4 delta=2 undo=0 redo=1
+win32-result-selected-r text=arc len=3 cur=2 act=2 save=0 undo=1 redo=0
+win32-result-preedit-x text=arx len=3 cur=4 act=4 save=0 undo=1 redo=0
+win32-next-result-y text=ary len=3 cur=4 act=4 save=0 undo=1 redo=0
+firstpreedit-sel-base text=adef len=4 cur=1 act=1 save=0 undo=1 redo=0
+firstpreedit-sel-x text=axef len=4 cur=3 act=3 save=0 undo=1 redo=0
+firstpreedit-sel-cancel-x text=adef len=4 cur=1 act=1 save=0 undo=1 redo=0
+firstpreedit-sel-undo-base text=abcdef cur=0 act=1 delta=1 undo=0 redo=1
+firstpreedit-sel-update-yz text=ayzf len=4 cur=5 act=5 save=0 undo=1 redo=0
+firstpreedit-sel-update-cancel text=adef len=4 cur=1 act=1 save=0 undo=1 redo=0
+firstpreedit-sel-update-undo-base text=abcdef cur=0 act=1 delta=1 undo=0 redo=1
+firstpreedit-sel-result-RS text=aRSf len=4 cur=5 act=5 save=0 undo=1 redo=0
+firstpreedit-sel-result-undo1 text=aRef cur=3 act=5 delta=2 undo=1 redo=1
+firstpreedit-sel-result-undo2 text=adef cur=1 act=5 delta=2 undo=1 redo=1
+firstpreedit-sel-result-undo3 text=abcdef cur=0 act=5 delta=1 undo=0 redo=1
+explicit-replacement-after-rollback text=adef len=4 cur=1 act=1 save=0 undo=1 redo=0
+explicit-replacement-overwrite-XY text=aXYf len=4 cur=5 act=5 save=0 undo=1 redo=0
+explicit-replacement-undo1 text=aXef cur=3 act=5 delta=2 undo=1 redo=1
+explicit-replacement-undo2 text=adef cur=1 act=5 delta=2 undo=1 redo=1
+explicit-replacement-undo3 text=abcdef cur=0 act=5 delta=1 undo=0 redo=1
+setovertype-before-cancel text=axc len=3 cur=2 act=2 save=0 undo=1 redo=0
+setovertype-after-cancel text=abc len=3 cur=0 act=0 save=0 undo=0 redo=0
+setovertype-cancel-undo text=abc cur=0 act=0 delta=0 undo=0 redo=0
+setovertype-overwrite-preedit-x text=axc len=3 cur=2 act=2 save=0 undo=1 redo=0
+setovertype-off-update-yz text=ayzbc len=5 cur=2 act=2 save=0 undo=1 redo=0
+setovertype-off-update-cancel text=abc len=3 cur=0 act=0 save=0 undo=0 redo=0
+setovertype-insert-preedit-x text=axbc len=4 cur=1 act=1 save=0 undo=1 redo=0
+setovertype-on-update-yz text=ayz len=3 cur=4 act=4 save=0 undo=1 redo=0
+setovertype-on-update-cancel text=abc len=3 cur=0 act=0 save=0 undo=0 redo=0
+setovertype-commit-before text=axc len=3 cur=2 act=2 save=0 undo=1 redo=0
+setovertype-commit-undo text=abc cur=0 act=2 delta=2 undo=0 redo=1
+prior-unit-after-d text=abcd len=4 cur=1 act=1 save=0 undo=1 redo=0
+cancel-prior-preedit-x text=abcdx len=5 cur=2 act=2 save=0 undo=1 redo=0
+cancel-prior-after text=abcd len=4 cur=1 act=1 save=0 undo=1 redo=0
+cancel-prior-undo1 text=abc cur=0 act=1 delta=1 undo=0 redo=1

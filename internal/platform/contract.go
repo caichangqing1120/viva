@@ -832,6 +832,10 @@ type TextState struct {
 	Selection         text.Range
 	Composition       text.Range
 	Composing         bool
+	// TentativeComposition is the editor's opt-in capability snapshot, derived
+	// only from Editor.TentativeCompositionEnabled. It is distinct from the
+	// current UI Composing flag and false for disabled or passive owners.
+	TentativeComposition bool
 	// Redraw asks for a frame after this event although the editor itself looks
 	// the same: the application changed something else on screen in response, a
 	// terminal drawing typed text ahead of the server's echo. It is not part of
@@ -925,6 +929,12 @@ type TextEvent struct {
 	Replacement     text.Range
 	HasReplacement  bool
 	Command         TextCommand
+	// CompositionPhase tags an opt-in tentative-composition event. The zero
+	// value preserves the legacy event contract; Apply consults the target
+	// editor's capability and never infers a phase from Kind.
+	CompositionPhase    text.CompositionPhase
+	ReplacementUTF16    text.UTF16Range
+	HasReplacementUTF16 bool
 }
 
 // TextHandler applies one native edit and returns the complete new state.
@@ -934,6 +944,20 @@ type TextHandler func(TextEvent) (TextState, error)
 // a platform text service straight to a Go-owned editor. A replacement range, if
 // the event names one, is selected first, so the event acts on it.
 func (event TextEvent) Apply(editor *text.Editor) {
+	if event.CompositionPhase != text.CompositionNone && editor.TentativeCompositionEnabled() {
+		// One explicit opt-in route. A false rejection still returns here: the
+		// event never retries through the legacy switch below.
+		editor.ApplyComposition(text.CompositionEvent{
+			Phase:               event.CompositionPhase,
+			Text:                event.Text,
+			Selected:            event.MarkedSelection,
+			Replacement:         event.Replacement,
+			HasReplacement:      event.HasReplacement,
+			ReplacementUTF16:    event.ReplacementUTF16,
+			HasReplacementUTF16: event.HasReplacementUTF16,
+		})
+		return
+	}
 	if event.HasReplacement {
 		editor.SetSelection(event.Replacement)
 	}
@@ -1040,11 +1064,12 @@ func TextHistoryCommand(event KeyEvent) (TextCommand, bool) {
 func EditorState(editor *text.Editor) TextState {
 	composition, composing := editor.Composition()
 	return TextState{
-		Value:             editor.String(),
-		Selection:         editor.Selection(),
-		SelectionReversed: editor.Selection().Start != editor.Selection().End && editor.Caret() == editor.Selection().Start,
-		Composition:       composition,
-		Composing:         composing,
+		Value:                editor.String(),
+		Selection:            editor.Selection(),
+		SelectionReversed:    editor.Selection().Start != editor.Selection().End && editor.Caret() == editor.Selection().Start,
+		Composition:          composition,
+		Composing:            composing,
+		TentativeComposition: editor.TentativeCompositionEnabled(),
 	}
 }
 

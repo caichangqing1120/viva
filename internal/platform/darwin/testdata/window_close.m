@@ -38,7 +38,9 @@ uint16_t vivaRectangleLayer(uintptr_t handle, size_t index) { return 0; }
 int vivaPressAt(uintptr_t handle, double x, double y) { return 0; }
 void vivaTextInput(uintptr_t handle, void *view, int kind, const unsigned char *utf8,
                   size_t length, int64_t start, int64_t selectedLength,
-                  int64_t replacementStart, int64_t replacementLength, int command) {}
+                  int64_t replacementStart, int64_t replacementLength, int command,
+                  int compositionPhase, int64_t replacementUTF16Start,
+                  int64_t replacementUTF16Length, int hasReplacementUTF16) {}
 
 void vivaWindowClosed(uintptr_t handle) {
     assert(handle == 1);
@@ -46,6 +48,12 @@ void vivaWindowClosed(uintptr_t handle) {
     released = YES;
     // AppKit may reenter input delivery as the Go window releases its handle.
     [closingView mouseExited:exitEvent];
+}
+
+void vivaTextCompositionLost(uintptr_t handle, void *view, int reason) {
+    (void)handle;
+    (void)view;
+    (void)reason;
 }
 
 int main(void) {

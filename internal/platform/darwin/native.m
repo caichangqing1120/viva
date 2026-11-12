@@ -365,6 +365,7 @@ enum {
     VIVA_TEXT_SET_SELECTION = 5,
     VIVA_TEXT_PASTE = 6,
     VIVA_TEXT_PASTE_NO_TEXT = 7,
+    VIVA_TEXT_CANCEL_COMPOSITION = 8,
 };
 
 /* Composition phases mirror the accepted text.CompositionPhase numbers. The
@@ -3841,6 +3842,8 @@ static void viva_encode_scene(
     BOOL _tentativeComposition;
     BOOL _discardingComposition;
     BOOL _detachingCallbacks;
+    BOOL _cancelingComposition;
+    BOOL _compositionCancelEmitted;
     BOOL _textInputEnabled;
     BOOL _textInputMultiline;
     BOOL _textPlaced;
@@ -3960,6 +3963,8 @@ static void viva_encode_scene(
        selectedRange:(NSRange)selectedRange
      replacementRange:(NSRange)replacementRange
              command:(int)command;
+- (void)cancelMarkedComposition;
+- (void)interpretKeyEvent:(NSEvent *)event;
 - (NSUInteger)textIndexForEvent:(NSEvent *)event;
 - (NSUInteger)textIndexForLocalPoint:(NSPoint)point;
 - (BOOL)eventIsInsideTextInput:(NSEvent *)event;
@@ -4585,7 +4590,7 @@ static int viva_navigation_command(SEL selector) {
         NSTextInputContext *context = self.inputContext;
         BOOL interpreted = context != nil && [context handleEvent:event];
         if (!interpreted) {
-            [self interpretKeyEvents:@[event]];
+            [self interpretKeyEvent:event];
         }
         _interpretingKey = NO;
         _interpretedPlain = nil;
@@ -4691,7 +4696,7 @@ static int viva_navigation_command(SEL selector) {
             _interpretingKey = YES;
             _interpretedConsumed = NO;
             _interpretedPlain = typed;
-            [self interpretKeyEvents:@[event]];
+            [self interpretKeyEvent:event];
             _interpretingKey = NO;
             _interpretedPlain = nil;
             if (!_interpretedConsumed && !_hasMarkedText) {
@@ -4704,7 +4709,7 @@ static int viva_navigation_command(SEL selector) {
             }
             return;
         }
-        [self interpretKeyEvents:@[event]];
+        [self interpretKeyEvent:event];
         return;
     }
     int key = characters.length == 0 ? 0 : viva_key_code([characters characterAtIndex:0]);
@@ -4714,7 +4719,7 @@ static int viva_navigation_command(SEL selector) {
     if (!viva_text_input_row_key_is_raw(_textInputEnabled && _textPlaced, _hasMarkedText, key, command) &&
         !viva_text_input_navigation_key_is_raw(_textInputEnabled && _textNavigationKeys, _hasMarkedText, key) &&
         viva_text_input_should_interpret_key(_textInputEnabled, _textInputMultiline, _hasMarkedText, key)) {
-        [self interpretKeyEvents:@[event]];
+        [self interpretKeyEvent:event];
         return;
     }
     if (_keyEventsEnabled && _callbackHandle != 0) {
@@ -5710,10 +5715,48 @@ static void viva_set_secure_event_input(BOOL on) {
     );
 }
 
+- (void)cancelMarkedComposition {
+    if (_compositionCancelEmitted) {
+        return;
+    }
+    _compositionCancelEmitted = YES;
+    [self emitTextKind:VIVA_TEXT_CANCEL_COMPOSITION
+                  text:@""
+         selectedRange:NSMakeRange(0, 0)
+       replacementRange:NSMakeRange(NSNotFound, 0)
+               command:0];
+}
+
+/* interpretKeyEvent is the one place that knows the key being interpreted is
+ * Escape during an input-method composition. Inside that window an empty mark,
+ * an empty insert or cancelOperation: is the input method's explicit
+ * cancellation; outside it they keep their ordinary meaning. */
+- (void)interpretKeyEvent:(NSEvent *)event {
+    BOOL previousCanceling = _cancelingComposition;
+    BOOL previousEmitted = _compositionCancelEmitted;
+    NSString *characters = event.characters;
+    _cancelingComposition = _hasMarkedText && characters.length > 0 &&
+        viva_key_code([characters characterAtIndex:0]) == VIVA_KEY_ESCAPE;
+    _compositionCancelEmitted = NO;
+    [self interpretKeyEvents:@[event]];
+    _cancelingComposition = previousCanceling;
+    _compositionCancelEmitted = previousEmitted;
+}
+
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     NSString *plain = [string isKindOfClass:[NSAttributedString class]]
         ? [(NSAttributedString *)string string]
         : (NSString *)string;
+    if (_cancelingComposition) {
+        if (_compositionCancelEmitted) {
+            return;
+        }
+        if (plain.length == 0) {
+            [self cancelMarkedComposition];
+            return;
+        }
+        _cancelingComposition = NO;
+    }
     [self emitTextKind:VIVA_TEXT_INSERT
                   text:plain ?: @""
          selectedRange:NSMakeRange(0, 0)
@@ -5727,6 +5770,16 @@ static void viva_set_secure_event_input(BOOL on) {
     NSString *plain = [string isKindOfClass:[NSAttributedString class]]
         ? [(NSAttributedString *)string string]
         : (NSString *)string;
+    if (_cancelingComposition) {
+        if (_compositionCancelEmitted) {
+            return;
+        }
+        if (plain.length == 0) {
+            [self cancelMarkedComposition];
+            return;
+        }
+        _cancelingComposition = NO;
+    }
     [self emitTextKind:VIVA_TEXT_SET_MARKED
                   text:plain ?: @""
          selectedRange:selectedRange
@@ -6010,6 +6063,15 @@ static void viva_set_secure_event_input(BOOL on) {
         command = VIVA_TEXT_UNDO;
     } else if (selector == @selector(redo:)) {
         command = VIVA_TEXT_REDO;
+    } else if (selector == @selector(cancelOperation:)) {
+        if (_hasMarkedText) {
+            if (!_cancelingComposition) {
+                _compositionCancelEmitted = NO;
+            }
+            [self cancelMarkedComposition];
+            return;
+        }
+        command = viva_navigation_command(selector);
     } else {
         command = viva_navigation_command(selector);
     }

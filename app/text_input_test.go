@@ -33,10 +33,12 @@ func TestTextSelectionAndIMEUseRuneRanges(t *testing.T) {
 	}
 }
 
-// TestDisableIMEPassesToThePlatformTextInput guards the pass-through: an input
-// that keeps the host's input method off a remote-desktop surface reaches the
-// platform editor, so the platform can act on it. A terminal hit is what such a
-// surface focuses; the flag is independent of it.
+func TestTextEventKindsAppendWithoutRenumbering(t *testing.T) {
+	if TextPasteNoText != 7 || TextCancelComposition != 8 {
+		t.Fatalf("text event kinds = %d, %d; want 7, 8", TextPasteNoText, TextCancelComposition)
+	}
+}
+
 func TestDisableIMEPassesToThePlatformTextInput(t *testing.T) {
 	field := gfx.Item(3)
 	config := Config{Width: 300, Height: 200}

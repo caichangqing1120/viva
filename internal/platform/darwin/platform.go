@@ -163,6 +163,11 @@ type runState struct {
 	textInput       TextInput
 	textInputActive bool
 	textEventRedraw bool
+	// A native updateText that drops a live owned mark reports the lost
+	// composition back here. Go defers it until the state push returns so the
+	// Cancel cannot re-enter the same update recursively.
+	textUpdateDepth            int
+	textCompositionLostPending bool
 	// web hosts the pages of the window when the application asked for any.
 	web            *webState
 	webReady       func()
@@ -770,42 +775,43 @@ func makeNativeTextInput(input TextInput, value unsafe.Pointer) C.viva_text_inpu
 	markedStart := editor.RuneIndexToUTF16(input.State.Composition.Start)
 	markedEnd := editor.RuneIndexToUTF16(input.State.Composition.End)
 	return C.viva_text_input_config{
-		utf8:                 (*C.uchar)(value),
-		utf8_length:          C.size_t(len(input.State.Value)),
-		copy_override:        C.int(boolInt(input.CopyOverride)),
-		x:                    C.float(input.X),
-		y:                    C.float(input.Y),
-		width:                C.float(input.Width),
-		height:               C.float(input.Height),
-		font_size:            C.float(input.FontSize),
-		font_weight:          C.float(input.Weight),
-		alignment:            C.int(input.Alignment),
-		red:                  C.float(input.Color.Red),
-		green:                C.float(input.Color.Green),
-		blue:                 C.float(input.Color.Blue),
-		alpha:                C.float(input.Color.Alpha),
-		selected_start:       C.size_t(selectedStart),
-		selected_length:      C.size_t(selectedEnd - selectedStart),
-		marked_start:         C.size_t(markedStart),
-		marked_length:        C.size_t(markedEnd - markedStart),
-		has_marked_text:      C.int(boolInt(input.State.Composing)),
-		multiline:            C.int(boolInt(input.Multiline)),
-		secure:               C.int(boolInt(input.Secure)),
-		terminal:             C.int(boolInt(input.Terminal)),
-		hide_native_overlays: C.int(boolInt(input.HideNativeOverlays)),
-		mono_face:            C.int(input.MonoFace),
-		cell_width:           C.float(input.CellWidth),
-		baseline:             C.float(input.Baseline),
-		alt_sends_escape:     C.int(boolInt(input.AltSendsEscape)),
-		key_releases:         C.int(boolInt(input.KeyReleases)),
-		navigation_keys:      C.int(boolInt(input.NavigationKeys)),
-		placed:               C.int(boolInt(input.Placed)),
-		layer:                C.uint16_t(input.Layer),
-		caret_x:              C.float(input.CaretX),
-		caret_y:              C.float(input.CaretY),
-		caret_width:          C.float(input.CaretWidth),
-		caret_height:         C.float(input.CaretHeight),
-		enabled:              1,
+		utf8:                  (*C.uchar)(value),
+		utf8_length:           C.size_t(len(input.State.Value)),
+		copy_override:         C.int(boolInt(input.CopyOverride)),
+		x:                     C.float(input.X),
+		y:                     C.float(input.Y),
+		width:                 C.float(input.Width),
+		height:                C.float(input.Height),
+		font_size:             C.float(input.FontSize),
+		font_weight:           C.float(input.Weight),
+		alignment:             C.int(input.Alignment),
+		red:                   C.float(input.Color.Red),
+		green:                 C.float(input.Color.Green),
+		blue:                  C.float(input.Color.Blue),
+		alpha:                 C.float(input.Color.Alpha),
+		selected_start:        C.size_t(selectedStart),
+		selected_length:       C.size_t(selectedEnd - selectedStart),
+		marked_start:          C.size_t(markedStart),
+		marked_length:         C.size_t(markedEnd - markedStart),
+		has_marked_text:       C.int(boolInt(input.State.Composing)),
+		multiline:             C.int(boolInt(input.Multiline)),
+		secure:                C.int(boolInt(input.Secure)),
+		terminal:              C.int(boolInt(input.Terminal)),
+		hide_native_overlays:  C.int(boolInt(input.HideNativeOverlays)),
+		mono_face:             C.int(input.MonoFace),
+		cell_width:            C.float(input.CellWidth),
+		baseline:              C.float(input.Baseline),
+		alt_sends_escape:      C.int(boolInt(input.AltSendsEscape)),
+		key_releases:          C.int(boolInt(input.KeyReleases)),
+		navigation_keys:       C.int(boolInt(input.NavigationKeys)),
+		placed:                C.int(boolInt(input.Placed)),
+		layer:                 C.uint16_t(input.Layer),
+		caret_x:               C.float(input.CaretX),
+		caret_y:               C.float(input.CaretY),
+		caret_width:           C.float(input.CaretWidth),
+		caret_height:          C.float(input.CaretHeight),
+		tentative_composition: C.int(boolInt(input.State.TentativeComposition)),
+		enabled:               1,
 	}
 }
 

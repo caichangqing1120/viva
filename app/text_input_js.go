@@ -77,12 +77,13 @@ func webTextInput(provider TextInputProvider) web.TextInputProvider {
 
 func platformTextState(state TextState) platform.TextState {
 	return platform.TextState{
-		Value:             state.Value,
-		Selection:         platformTextRange(state.Selection),
-		SelectionReversed: state.SelectionReversed,
-		Composition:       platformTextRange(state.Composition),
-		Composing:         state.Composing,
-		Redraw:            state.Redraw,
+		Value:                state.Value,
+		Selection:            platformTextRange(state.Selection),
+		SelectionReversed:    state.SelectionReversed,
+		Composition:          platformTextRange(state.Composition),
+		Composing:            state.Composing,
+		TentativeComposition: state.TentativeComposition,
+		Redraw:               state.Redraw,
 	}
 }
 
@@ -92,6 +93,9 @@ func appTextEvent(event platform.TextEvent) TextEvent {
 		Selection:       appTextRange(event.Selection),
 		MarkedSelection: appTextRange(event.MarkedSelection),
 		Replacement:     appTextRange(event.Replacement), HasReplacement: event.HasReplacement,
-		Command: TextCommand(event.Command),
+		Command:             TextCommand(event.Command),
+		CompositionPhase:    event.CompositionPhase,
+		ReplacementUTF16:    event.ReplacementUTF16,
+		HasReplacementUTF16: event.HasReplacementUTF16,
 	}
 }

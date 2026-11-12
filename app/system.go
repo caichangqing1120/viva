@@ -144,6 +144,23 @@ func SetClipboardText(value string) error {
 	return nativeSetClipboardText(value)
 }
 
+func SetRectangularClipboardText(value string) error {
+	if strings.IndexByte(value, 0) >= 0 {
+		return fmt.Errorf("app: clipboard text contains NUL")
+	}
+	if err, handled := driverSetRectangularClipboardText(value); handled {
+		return err
+	}
+	return nativeSetRectangularClipboardText(value)
+}
+
+func ClipboardRectangular() bool {
+	if rectangular, handled := driverClipboardRectangular(); handled {
+		return rectangular
+	}
+	return nativeClipboardRectangular()
+}
+
 func SetCursor(cursor Cursor) error {
 	if cursor > CursorHidden {
 		return fmt.Errorf("app: invalid cursor %d", cursor)

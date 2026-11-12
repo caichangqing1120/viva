@@ -66,16 +66,17 @@ type Driver struct {
 	// gfx.KeyShiftLeft..ui.KeyMetaRight.
 	modifierKeys uint8
 
-	clipboard      string
-	openedURL      string
-	hasOpenedURL   bool
-	openedPath     string
-	hasOpenedPath  bool
-	openedWith     [2]string
-	hasOpenedWith  bool
-	releases       []func()
-	closed         bool
-	appearanceOpen bool
+	clipboard            string
+	clipboardRectangular bool
+	openedURL            string
+	hasOpenedURL         bool
+	openedPath           string
+	hasOpenedPath        bool
+	openedWith           [2]string
+	hasOpenedWith        bool
+	releases             []func()
+	closed               bool
+	appearanceOpen       bool
 
 	system                   driverSystem
 	openFilesResponses       [driverOpenFilesQueueSize]driverOpenFilesResponse
@@ -894,9 +895,16 @@ func (driver *Driver) ShortcutChord(modifiers gfx.Modifiers, character rune) (bo
 func (driver *Driver) clipboardEdit(action byte) error {
 	event, changed, err := platform.TextClipboardEvent(driver.painter.nativeText.ClipboardState(action), driver.painter.nativeText.Secure, action,
 		func() (string, error) { return driver.clipboard, nil },
-		func(value string) error { driver.SetClipboard(value); return nil })
+		func(value string) error {
+			driver.SetClipboard(value)
+			driver.clipboardRectangular = driver.painter.nativeText.CopyRectangular
+			return nil
+		})
 	if err != nil || !changed {
 		return err
+	}
+	if action == 'v' && event.Kind == platform.TextPaste {
+		event.Rectangular = driver.clipboardRectangular
 	}
 	return driver.textEvent(event)
 }
@@ -941,6 +949,7 @@ func (driver *Driver) Clipboard() string { return driver.clipboard }
 
 // SetClipboard replaces the driver's private clipboard.
 func (driver *Driver) SetClipboard(value string) {
+	driver.clipboardRectangular = false
 	driver.clipboard, driver.system.clipboardImage, driver.system.clipboardFiles = value, nil, nil
 }
 

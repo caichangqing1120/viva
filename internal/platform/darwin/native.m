@@ -5,6 +5,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <mach/mach_time.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -319,6 +320,49 @@ enum {
     VIVA_TEXT_PASTE_NO_TEXT = 7,
 };
 
+/* Composition phases mirror the accepted text.CompositionPhase numbers. The
+ * native bridge reports the caller's real phase; it never infers one from a
+ * text event kind. */
+enum {
+    VIVA_COMPOSITION_NONE = 0,
+    VIVA_COMPOSITION_UPDATE = 1,
+    VIVA_COMPOSITION_RESULT = 2,
+    VIVA_COMPOSITION_COMMIT = 3,
+    VIVA_COMPOSITION_CANCEL = 4,
+    VIVA_COMPOSITION_EMPTY_COMMIT = 5,
+};
+
+/* A present AppKit range is raw UTF-16 and may be out of bounds; the accepted
+ * E1 conversion owns the fallback. Clamping keeps the C ABI scalar positive
+ * instead of letting a huge NSUInteger wrap negative. */
+static int64_t viva_text_int64(NSUInteger value) {
+    return value > (NSUInteger)INT64_MAX ? INT64_MAX : (int64_t)value;
+}
+
+/* The caller's real composition phase, decided only by the NSTextInputClient
+ * entry point and its live marked-text state. Ordinary typing stays untagged. */
+static int viva_text_composition_phase(int kind, NSUInteger textLength, BOOL hasMarked, NSRange replacementRange) {
+    switch (kind) {
+    case VIVA_TEXT_SET_MARKED:
+        if (textLength > 0) {
+            return VIVA_COMPOSITION_UPDATE;
+        }
+        return hasMarked ? VIVA_COMPOSITION_CANCEL : VIVA_COMPOSITION_NONE;
+    case VIVA_TEXT_INSERT:
+        if (hasMarked) {
+            return textLength > 0 ? VIVA_COMPOSITION_RESULT : VIVA_COMPOSITION_EMPTY_COMMIT;
+        }
+        if (textLength == 0 && replacementRange.location != NSNotFound) {
+            return VIVA_COMPOSITION_EMPTY_COMMIT;
+        }
+        return VIVA_COMPOSITION_NONE;
+    case VIVA_TEXT_UNMARK:
+        return hasMarked ? VIVA_COMPOSITION_COMMIT : VIVA_COMPOSITION_NONE;
+    default:
+        return VIVA_COMPOSITION_NONE;
+    }
+}
+
 enum {
     VIVA_TEXT_DELETE_BACKWARD = 1,
     VIVA_TEXT_DELETE_FORWARD = 2,
@@ -491,7 +535,20 @@ extern void vivaTextInput(
     int64_t selectedLength,
     int64_t replacementStart,
     int64_t replacementLength,
-    int command
+    int command,
+    int compositionPhase,
+    int64_t replacementUTF16Start,
+    int64_t replacementUTF16Length,
+    int hasReplacementUTF16
+);
+
+// vivaTextCompositionLost reports that AppKit ended a live marked composition
+// without a normal terminal text event. reason is 1 for a discard/lost path.
+// Go gates the event on the returned tentative-capability snapshot.
+extern void vivaTextCompositionLost(
+    uintptr_t callbackHandle,
+    void *view,
+    int reason
 );
 
 extern unsigned char *vivaCopyText(uintptr_t callbackHandle, void *view, size_t *length);
@@ -3596,6 +3653,9 @@ static void viva_encode_scene(
     NSRange _selectedRange;
     NSRange _markedRange;
     BOOL _hasMarkedText;
+    BOOL _tentativeComposition;
+    BOOL _discardingComposition;
+    BOOL _detachingCallbacks;
     BOOL _textInputEnabled;
     BOOL _textInputMultiline;
     BOOL _textPlaced;
@@ -3689,7 +3749,9 @@ static void viva_encode_scene(
             length:(NSUInteger)length
      selectedRange:(NSRange)selectedRange
        markedRange:(NSRange)markedRange
-     hasMarkedText:(BOOL)hasMarkedText;
+     hasMarkedText:(BOOL)hasMarkedText
+ tentativeComposition:(BOOL)tentativeComposition
+    endsComposition:(BOOL)endsComposition;
 - (int)updateTextInput:(viva_text_input_config)textInput;
 - (void)setTitlebarHeight:(CGFloat)height;
 - (void)cancelTitlebarDrag;
@@ -3698,6 +3760,8 @@ static void viva_encode_scene(
 - (void)stopCaretBlink;
 - (void)shutdownTextInput;
 - (void)detachCallbacks;
+- (void)notifyCompositionLost;
+- (void)endNativeCompositionNotifying:(BOOL)notify;
 - (BOOL)rebuildTextTexture;
 - (BOOL)rebuildTextLabels;
 - (viva_editor_line)newTextLine;
@@ -3843,6 +3907,7 @@ static int viva_navigation_command(SEL selector) {
         _selectedRange = NSMakeRange(textInput.selected_start, textInput.selected_length);
         _markedRange = NSMakeRange(textInput.marked_start, textInput.marked_length);
         _hasMarkedText = textInput.has_marked_text != 0;
+        _tentativeComposition = textInput.tentative_composition != 0;
         if (_textInputEnabled) {
             _text = [[NSString alloc] initWithBytes:textInput.utf8
                                              length:textInput.utf8_length
@@ -4022,6 +4087,11 @@ static int viva_navigation_command(SEL selector) {
 - (BOOL)resignFirstResponder {
     if (_callbackHandle != 0 && _keyEventsEnabled && self.window.isKeyWindow) {
         vivaFocusLost(_callbackHandle, self);
+    }
+    // Leaving the field ends a live preedit here rather than leaving AppKit's
+    // input context pointing at an editor that no longer has the keyboard.
+    if (_textInputEnabled) {
+        [self endNativeCompositionNotifying:YES];
     }
     return YES;
 }
@@ -4705,6 +4775,12 @@ static void viva_set_secure_event_input(BOOL on) {
         notification.object == self.window && _callbackHandle != 0 && _keyEventsEnabled) {
         vivaFocusLost(_callbackHandle, self);
     }
+    // The window losing key status also ends an owned preedit: its candidate
+    // window belongs to the old key window.
+    if ([notification.name isEqualToString:NSWindowDidResignKeyNotification] &&
+        notification.object == self.window && _textInputEnabled) {
+        [self endNativeCompositionNotifying:YES];
+    }
 }
 
 - (viva_editor_line)newTextLine {
@@ -4763,25 +4839,57 @@ static void viva_set_secure_event_input(BOOL on) {
     [[NSRunLoop mainRunLoop] addTimer:_caretTimer forMode:NSRunLoopCommonModes];
 }
 
+- (void)notifyCompositionLost {
+    if (_callbackHandle == 0 || !_textInputEnabled || !_tentativeComposition) {
+        return;
+    }
+    vivaTextCompositionLost(_callbackHandle, self, 1);
+}
+
+// endNativeCompositionNotifying releases AppKit's marked surface. A synchronous
+// unmarkText: from the input context is suppressed so only the explicit lost
+// report (or the accepted native unmarkText path) reaches Go. The mark is
+// cleared first, so repeated calls are idempotent.
+- (void)endNativeCompositionNotifying:(BOOL)notify {
+    if (!_hasMarkedText) {
+        return;
+    }
+    _hasMarkedText = NO;
+    _markedRange = NSMakeRange(0, 0);
+    BOOL wasDiscarding = _discardingComposition;
+    _discardingComposition = YES;
+    [self.inputContext discardMarkedText];
+    _discardingComposition = wasDiscarding;
+    if (notify) {
+        [self notifyCompositionLost];
+    }
+}
+
 - (void)shutdownTextInput {
+    // Detachment has no Go owner left to reconcile; keep the old teardown
+    // silent while still releasing the native marked surface.
+    [self endNativeCompositionNotifying:!_detachingCallbacks];
     BOOL wasEnabled = _textInputEnabled;
     _textInputEnabled = NO;
     [self syncSecureEventInput];
     _textSelectionDragging = NO;
     [self stopCaretBlink];
     if (wasEnabled) {
-        [self.inputContext discardMarkedText];
         [self.inputContext deactivate];
     }
     _hasMarkedText = NO;
+    _markedRange = NSMakeRange(0, 0);
+    _tentativeComposition = NO;
     _textAltSendsEscape = NO;
     _textKeyReleases = NO;
 }
 
 - (void)detachCallbacks {
     // The view can outlive its Go window and receive a final mouseExited:.
-    _callbackHandle = 0;
+    _detachingCallbacks = YES;
     [self shutdownTextInput];
+    _callbackHandle = 0;
+    _detachingCallbacks = NO;
 }
 
 - (void)render {
@@ -5121,12 +5229,21 @@ static void viva_set_secure_event_input(BOOL on) {
     }
 
     BOOL wasEnabled = _textInputEnabled;
-    _textInputEnabled = NO;
-    [self syncSecureEventInput];
+    BOOL preservesComposition = wasEnabled && _hasMarkedText && textInput.enabled &&
+        _tentativeComposition && textInput.tentative_composition && textInput.has_marked_text;
+    if (wasEnabled && _hasMarkedText && !preservesComposition) {
+        // Replacing the editor releases the old native marked surface. A tag
+        // for the replaced composition is produced by the Go bridge before it
+        // swaps the handler, so this side must not report a second one.
+        [self endNativeCompositionNotifying:NO];
+    }
+    if (!preservesComposition) {
+        _textInputEnabled = NO;
+        [self syncSecureEventInput];
+    }
     _textSelectionDragging = NO;
     [self stopCaretBlink];
-    if (wasEnabled) {
-        [self.inputContext discardMarkedText];
+    if (wasEnabled && !preservesComposition) {
         [self.inputContext deactivate];
     }
     _hasMarkedText = NO;
@@ -5141,6 +5258,7 @@ static void viva_set_secure_event_input(BOOL on) {
         _textBaseline = 0;
         _textAltSendsEscape = NO;
         _textKeyReleases = NO;
+        _tentativeComposition = NO;
         [_text release];
         _text = [@"" retain];
         [_textColor release];
@@ -5180,6 +5298,7 @@ static void viva_set_secure_event_input(BOOL on) {
         _text.length
     );
     _hasMarkedText = textInput.has_marked_text != 0;
+    _tentativeComposition = textInput.tentative_composition != 0;
     _textInputMultiline = textInput.multiline != 0;
     _textPlaced = textInput.placed != 0;
     _textNavigationKeys = textInput.navigation_keys != 0;
@@ -5200,7 +5319,9 @@ static void viva_set_secure_event_input(BOOL on) {
         return 3;
     }
     [self.window makeFirstResponder:self];
-    [self.inputContext activate];
+    if (!preservesComposition) {
+        [self.inputContext activate];
+    }
     [self.inputContext invalidateCharacterCoordinates];
     [self restartCaretBlink];
     return 0;
@@ -5226,7 +5347,9 @@ static void viva_set_secure_event_input(BOOL on) {
             length:(NSUInteger)length
      selectedRange:(NSRange)selectedRange
        markedRange:(NSRange)markedRange
-     hasMarkedText:(BOOL)hasMarkedText {
+     hasMarkedText:(BOOL)hasMarkedText
+ tentativeComposition:(BOOL)tentativeComposition
+    endsComposition:(BOOL)endsComposition {
     if (!_textInputEnabled || (utf8 == NULL && length > 0)) {
         return 1;
     }
@@ -5236,16 +5359,26 @@ static void viva_set_secure_event_input(BOOL on) {
     if (replacement == nil) {
         return 2;
     }
+    // A Go state push that removes a live owned mark is a real lost
+    // composition unless Go is already reporting the terminal event itself.
+    // Reconcile once here, but let Go defer the callback until this state push
+    // has returned, so a Cancel cannot re-enter updateText recursively.
+    BOOL wasMarked = _hasMarkedText;
+    BOOL wasOwned = _tentativeComposition;
     [_text release];
     _text = replacement;
     _selectedRange = viva_clamp_range(selectedRange, _text.length);
     _markedRange = viva_clamp_range(markedRange, _text.length);
     _hasMarkedText = hasMarkedText;
+    _tentativeComposition = tentativeComposition;
     _caretVisible = YES;
     if (![self rebuildTextTexture]) {
         return 3;
     }
     [self restartCaretBlink];
+    if (wasMarked && wasOwned && tentativeComposition && !hasMarkedText && !endsComposition) {
+        [self notifyCompositionLost];
+    }
     return 0;
 }
 
@@ -5254,7 +5387,7 @@ static void viva_set_secure_event_input(BOOL on) {
        selectedRange:(NSRange)selectedRange
      replacementRange:(NSRange)replacementRange
              command:(int)command {
-    if (_callbackHandle == 0 || !_textInputEnabled) {
+    if (_discardingComposition || _callbackHandle == 0 || !_textInputEnabled) {
         return;
     }
     if (_interpretingKey) {
@@ -5269,12 +5402,20 @@ static void viva_set_secure_event_input(BOOL on) {
         _interpretedConsumed = YES;
     }
     NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
+    BOOL hasReplacement = replacementRange.location != NSNotFound;
     int64_t replacementStart = -1;
     int64_t replacementLength = 0;
-    if (replacementRange.location != NSNotFound) {
+    int64_t replacementUTF16Start = -1;
+    int64_t replacementUTF16Length = 0;
+    if (hasReplacement) {
+        // Legacy fields keep their exact pre-E3B cast, so an untagged event is
+        // unchanged. The raw pair is the provenance form and stays positive.
         replacementStart = (int64_t)replacementRange.location;
         replacementLength = (int64_t)replacementRange.length;
+        replacementUTF16Start = viva_text_int64(replacementRange.location);
+        replacementUTF16Length = viva_text_int64(replacementRange.length);
     }
+    int compositionPhase = viva_text_composition_phase(kind, text.length, _hasMarkedText, replacementRange);
     viva_text_event_count++;
     vivaTextInput(
         _callbackHandle,
@@ -5286,7 +5427,11 @@ static void viva_set_secure_event_input(BOOL on) {
         (int64_t)selectedRange.length,
         replacementStart,
         replacementLength,
-        command
+        command,
+        compositionPhase,
+        replacementUTF16Start,
+        replacementUTF16Length,
+        hasReplacement ? 1 : 0
     );
 }
 
@@ -5392,7 +5537,12 @@ static void viva_set_secure_event_input(BOOL on) {
         return;
     }
     if (_hasMarkedText) {
-        [self.inputContext discardMarkedText];
+        // AppKit ends the marked composition before the selection transition.
+        // The Cancel is its own event; the selection below stays untagged.
+        [self endNativeCompositionNotifying:YES];
+        // A rejected/lost callback can change the text; never forward a stale
+        // UTF-16 range past the new end.
+        range = viva_clamp_range(range, _text.length);
     }
     [self emitTextKind:VIVA_TEXT_SET_SELECTION
                   text:@""
@@ -7189,6 +7339,8 @@ int viva_view_update_text(
     size_t marked_start,
     size_t marked_length,
     int has_marked_text,
+    int tentative_composition,
+    int ends_composition,
     int render
 ) {
     if (view == NULL) {
@@ -7200,7 +7352,9 @@ int viva_view_update_text(
                   length:utf8_length
            selectedRange:NSMakeRange(selected_start, selected_length)
              markedRange:NSMakeRange(marked_start, marked_length)
-           hasMarkedText:has_marked_text != 0];
+           hasMarkedText:has_marked_text != 0
+    tentativeComposition:tentative_composition != 0
+       endsComposition:ends_composition != 0];
         if (status == 0 && render != 0) {
             [(VivaMetalView *)view render];
         }

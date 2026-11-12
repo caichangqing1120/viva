@@ -314,13 +314,88 @@ func clipboardBytes(format uintptr, limit int) ([]byte, error) {
 	return append([]byte(nil), unsafe.Slice((*byte)(pointer(memory)), int(size))...), nil
 }
 
-func SetClipboardText(value string) error {
+func rectangularClipboardFormats() (uintptr, uintptr, error) {
+	columnName, err := syscall.UTF16PtrFromString("MSDEVColumnSelect")
+	if err != nil {
+		return 0, 0, err
+	}
+	column, _, callErr := registerClipboardFormat.Call(uintptr(unsafe.Pointer(columnName)))
+	if column == 0 {
+		return 0, 0, windowsCallError("register column clipboard", callErr)
+	}
+	borlandName, err := syscall.UTF16PtrFromString("Borland IDE Block Type")
+	if err != nil {
+		return 0, 0, err
+	}
+	borland, _, callErr := registerClipboardFormat.Call(uintptr(unsafe.Pointer(borlandName)))
+	if borland == 0 {
+		return 0, 0, windowsCallError("register Borland clipboard", callErr)
+	}
+	return column, borland, nil
+}
+
+func ClipboardRectangular() bool {
+	column, _, err := rectangularClipboardFormats()
+	if err != nil {
+		return false
+	}
+	available, _, _ := clipboardFormatAvailable.Call(column)
+	return available != 0
+}
+
+func allocateClipboardMarker(value byte) (uintptr, error) {
+	handle, _, callErr := globalAlloc.Call(globalMoveable|globalZeroInit, 1)
+	if handle == 0 {
+		return 0, windowsCallError("allocate clipboard marker", callErr)
+	}
+	if value != 0 {
+		memory, _, callErr := globalLock.Call(handle)
+		if memory == 0 {
+			globalFree.Call(handle)
+			return 0, windowsCallError("lock clipboard marker", callErr)
+		}
+		*(*byte)(pointer(memory)) = value
+		globalUnlock.Call(handle)
+	}
+	return handle, nil
+}
+
+func SetClipboardText(value string) error { return setClipboardText(value, false) }
+
+func SetClipboardRectangularText(value string) error { return setClipboardText(value, true) }
+
+func setClipboardText(value string, rectangular bool) error {
 	encoded, err := syscall.UTF16FromString(value)
 	if err != nil {
 		return fmt.Errorf("windows: encode clipboard text: %w", err)
 	}
 	clipboardMu.Lock()
 	defer clipboardMu.Unlock()
+	var columnFormat, borlandFormat, columnMarker, borlandMarker uintptr
+	if rectangular {
+		columnFormat, borlandFormat, err = rectangularClipboardFormats()
+		if err != nil {
+			return err
+		}
+		columnMarker, err = allocateClipboardMarker(0)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if columnMarker != 0 {
+				globalFree.Call(columnMarker)
+			}
+		}()
+		borlandMarker, err = allocateClipboardMarker(0x02)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if borlandMarker != 0 {
+				globalFree.Call(borlandMarker)
+			}
+		}()
+	}
 	bytes := uintptr(len(encoded) * 2)
 	handle, _, callErr := globalAlloc.Call(globalMoveable|globalZeroInit, bytes)
 	if handle == 0 {
@@ -353,6 +428,16 @@ func SetClipboardText(value string) error {
 		return windowsCallError("write clipboard", callErr)
 	}
 	transferred = true
+	if rectangular {
+		if result, _, callErr := setClipboardData.Call(columnFormat, columnMarker); result == 0 {
+			return windowsCallError("write column clipboard marker", callErr)
+		}
+		columnMarker = 0
+		if result, _, callErr := setClipboardData.Call(borlandFormat, borlandMarker); result == 0 {
+			return windowsCallError("write Borland clipboard marker", callErr)
+		}
+		borlandMarker = 0
+	}
 	return nil
 }
 

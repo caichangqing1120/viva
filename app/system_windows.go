@@ -27,6 +27,10 @@ func nativePreferredLanguages() []string { return windowsplatform.PreferredLangu
 func nativeSetClipboardText(value string) error {
 	return windowsplatform.SetClipboardText(value)
 }
+func nativeSetRectangularClipboardText(value string) error {
+	return windowsplatform.SetClipboardRectangularText(value)
+}
+func nativeClipboardRectangular() bool { return windowsplatform.ClipboardRectangular() }
 
 func nativeOnClipboardChange(notify func()) error {
 	return windowsplatform.OnClipboardChange(notify)

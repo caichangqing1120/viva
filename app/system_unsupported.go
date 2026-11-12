@@ -13,6 +13,8 @@ func nativeTextEngine() gfx.TextEngine                         { return nil }
 func nativePreferredLanguages() []string                       { return languagesFromEnvironment(os.Getenv) }
 func nativeClipboardText() (string, error)                     { return "", ErrUnsupported }
 func nativeSetClipboardText(string) error                      { return ErrUnsupported }
+func nativeSetRectangularClipboardText(string) error           { return ErrUnsupported }
+func nativeClipboardRectangular() bool                         { return false }
 func nativeHasClipboardImage() bool                            { return false }
 func nativeClipboardImagePNG() ([]byte, error)                 { return nil, ErrUnsupported }
 func nativeClipboardFiles() ([]string, error)                  { return nil, ErrUnsupported }

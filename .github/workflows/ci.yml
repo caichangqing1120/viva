@@ -297,6 +297,10 @@ jobs:
       # what the taskbar previews.
       - name: Minimized windows keep their visible frame
         run: go test ./internal/platform/windows -run '^TestMinimizedPaintKeepsTheVisibleSwapChain$' -count=1 -v
+      - name: Rectangular clipboard format interop
+        env:
+          VIVA_WINDOWS_CLIPBOARD: '1'
+        run: go test ./internal/platform/windows -run '^TestRectangularClipboardFormatsAndPlainReplacement$' -count=1 -v
 
   # Cross-vet does not exercise the Windows ARM64 calling convention.
   windows-arm64-text:

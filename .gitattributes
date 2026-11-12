@@ -3,3 +3,6 @@
 go.mod text eol=lf
 go.sum text eol=lf
 *.hlsl text eol=lf
+# The Scintilla overwrite reference is compared byte for byte; its mixed CRLF
+# and LF endings are part of the fixture, so git must not normalize it.
+text/testdata/composition-overwrite-reference.txt -text

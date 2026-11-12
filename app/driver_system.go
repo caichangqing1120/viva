@@ -81,6 +81,7 @@ func driverSetClipboardText(value string) (error, bool) {
 		return nil, false
 	}
 	system.driver.clipboard, system.driver.system.clipboardImage, system.driver.system.clipboardFiles = value, nil, nil
+	system.driver.clipboardRectangular = false
 	return nil, true
 }
 
@@ -91,6 +92,29 @@ func driverSetClipboardFiles(paths []string) (error, bool) {
 	}
 	system.driver.SetClipboardFiles(paths)
 	return nil, true
+}
+
+// driverSetRectangularClipboardText is SetRectangularClipboardText for a
+// driver-backed run: it records the text as a rectangular selection so a later
+// paste can tell the application the shape of the copied block.
+func driverSetRectangularClipboardText(value string) (error, bool) {
+	system := activeDriverSystem.Load()
+	if system == nil {
+		return nil, false
+	}
+	system.driver.clipboard, system.driver.system.clipboardImage, system.driver.system.clipboardFiles = value, nil, nil
+	system.driver.clipboardRectangular = true
+	return nil, true
+}
+
+// driverClipboardRectangular reports whether the driver's private clipboard
+// holds a rectangular selection.
+func driverClipboardRectangular() (bool, bool) {
+	system := activeDriverSystem.Load()
+	if system == nil {
+		return false, false
+	}
+	return system.driver.clipboardRectangular, true
 }
 
 // driverSetPrimarySelection and driverPrimarySelection are the primary selection of a driver-backed
@@ -492,6 +516,7 @@ func (driver *Driver) SetClipboardImage(png []byte) error {
 	driver.system.clipboardImage = append([]byte(nil), png...)
 	driver.system.clipboardFiles = nil
 	driver.clipboard = ""
+	driver.clipboardRectangular = false
 	return nil
 }
 
@@ -525,6 +550,7 @@ func (driver *Driver) SetClipboardFiles(paths []string) {
 	paths = paths[:min(len(paths), MaxClipboardFiles)]
 	driver.system.clipboardFiles = append([]string(nil), paths...)
 	driver.system.clipboardImage = nil
+	driver.clipboardRectangular = false
 	names := make([]byte, 0, 64)
 	for index, path := range paths {
 		if index > 0 {

@@ -183,3 +183,71 @@ func BenchmarkDriverCopyOverrideLargeSelectionCopy(b *testing.B) {
 		}
 	}
 }
+
+// TestDriverRectangularClipboardCopyAndPaste checks that an application-owned
+// rectangular selection travels through the driver's private clipboard: Copy
+// records the shape, Paste reports it back on the event, and ordinary text (or
+// a file list) clears the marker.
+func TestDriverRectangularClipboardCopyAndPaste(t *testing.T) {
+	editor := text.NewEditor("abc\ndef")
+	copyText := "bc\n  "
+	rectangularPaste := false
+	config := Config{Title: "rectangular", Width: 300, Height: 120}
+	config.Paint = func(canvas *gfx.Canvas, _ gfx.Size) {
+		components.PaintInput(canvas, gfx.LightTheme(), gfx.Rect{X: 10, Y: 10, Width: 220, Height: 30}, components.InputSnapshot{
+			ID: gfx.Item(1), Label: "Editor", Value: editor.String(), PlatformEditing: canvas.Focused() == gfx.Item(1),
+		})
+	}
+	config.TextInput = func(TextInputContext) *TextInput {
+		return &TextInput{State: TextStateOf(editor), CopyOverride: true, CopyText: func() string {
+			return copyText
+		}, CopyRectangular: true, OnEvent: func(event TextEvent) (TextState, error) {
+			if event.Kind == TextPaste && event.Text != "" {
+				rectangularPaste = event.Rectangular
+			}
+			return TextStateOf(editor), nil
+		}}
+	}
+	driver, err := NewDriver(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	if err := driver.Click(50, 25); err != nil {
+		t.Fatal(err)
+	}
+	if !driver.painter.nativeText.CopyRectangular {
+		t.Fatal("rectangular copy intent did not reach the platform input")
+	}
+	driver.SetClipboard("sentinel")
+	if handled, err := driver.ShortcutChord(gfx.ModifierControl, 'c'); !handled || err != nil || driver.Clipboard() != copyText || !ClipboardRectangular() {
+		t.Fatalf("custom copy handled=%v err=%v clipboard=%q rectangular=%v", handled, err, driver.Clipboard(), ClipboardRectangular())
+	}
+	if handled, err := driver.ShortcutChord(gfx.ModifierControl, 'v'); !handled || err != nil || !rectangularPaste {
+		t.Fatalf("rectangular paste handled=%v err=%v rectangular=%v", handled, err, rectangularPaste)
+	}
+	if err := SetClipboardText("plain"); err != nil || ClipboardRectangular() {
+		t.Fatalf("ordinary text kept rectangle marker: %v", err)
+	}
+}
+
+func TestDriverRectangularClipboardSetAndPlainReset(t *testing.T) {
+	driver, err := NewDriver(Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	if err := SetRectangularClipboardText("first\nsecond"); err != nil || driver.Clipboard() != "first\nsecond" || !ClipboardRectangular() {
+		t.Fatalf("rectangular clipboard = %q, %v, marker=%v", driver.Clipboard(), err, ClipboardRectangular())
+	}
+	if err := SetClipboardText("plain"); err != nil || ClipboardRectangular() || driver.Clipboard() != "plain" {
+		t.Fatalf("plain clipboard = %q, %v, marker=%v", driver.Clipboard(), err, ClipboardRectangular())
+	}
+	if err := SetRectangularClipboardText("column"); err != nil {
+		t.Fatal(err)
+	}
+	driver.SetClipboardFiles([]string{"/tmp/document.txt"})
+	if ClipboardRectangular() {
+		t.Fatal("copied files retained rectangular text marker")
+	}
+}

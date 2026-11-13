@@ -135,7 +135,7 @@ func TestCodeEditorChangeDecorationsRespectGeometry(t *testing.T) {
 	})
 
 	t.Run("horizontal scroll leaves the lane in place", func(t *testing.T) {
-		fixture := changeFixture(strings.Repeat("x", 200)+"\ntwo\n")
+		fixture := changeFixture(strings.Repeat("x", 200) + "\ntwo\n")
 		fixture.snapshot.HorizontalScrollbarID = gfx.Item(9)
 		fixture.snapshot.ChangeLines = []CodeEditorChangeLine{{Line: 0, Kind: ChangeModified}}
 		fixture.paint()

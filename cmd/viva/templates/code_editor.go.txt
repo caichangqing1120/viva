@@ -569,31 +569,39 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 			tint.Alpha *= 0.05
 			canvas.Fill(gfx.Rect{X: inner.X, Y: y, Width: inner.Width, Height: lineHeight}, tint)
 		}
-		if changeLane > 0 && editor.firstOfLine(index) {
-			for changeIndex < len(snapshot.ChangeLines) && snapshot.ChangeLines[changeIndex].Line < int(row.line) {
-				changeIndex++
-			}
-			if changeIndex < len(snapshot.ChangeLines) && snapshot.ChangeLines[changeIndex].Line == int(row.line) {
-				entry := snapshot.ChangeLines[changeIndex]
-				changeIndex++
-				if entry.Kind != ChangeNone {
-					color := snapshot.ChangeColors[entry.Kind-1]
-					if snapshot.Disabled {
-						color.Alpha *= 0.5
+		if changeLane > 0 {
+			// The bar and the top deletion point belong to the line's first row; the
+			// bottom deletion point belongs to its last visible row, so a wrapped
+			// line keeps it at its real end even when the first row scrolled away.
+			firstOfLine := editor.firstOfLine(index)
+			lastOfLine := index+1 >= len(editor.rows) || editor.rows[index+1].line != row.line
+			if firstOfLine || lastOfLine {
+				line := int(row.line)
+				for changeIndex < len(snapshot.ChangeLines) && snapshot.ChangeLines[changeIndex].Line < line {
+					changeIndex++
+				}
+				if changeIndex < len(snapshot.ChangeLines) && snapshot.ChangeLines[changeIndex].Line == line {
+					entry := snapshot.ChangeLines[changeIndex]
+					// Keep the cursor on this entry: the last row may come later.
+					barInset := min(float32(1), max(0, (changeLane-1)/2))
+					barWidth := changeLane - 2*barInset
+					point := min(max(1, changeLane-2), max(1, lineHeight*0.3))
+					pointX := changeX + (changeLane-point)/2
+					if firstOfLine {
+						if entry.Kind >= ChangeReverted && entry.Kind <= ChangeRevertedModified && barWidth > 0 {
+							color := snapshot.ChangeColors[entry.Kind-1]
+							if snapshot.Disabled {
+								color.Alpha *= 0.5
+							}
+							canvas.Fill(gfx.Rect{X: changeX + barInset, Y: y, Width: barWidth, Height: lineHeight}, color)
+						}
+						if entry.DeletedAbove {
+							canvas.Fill(gfx.Rect{X: pointX, Y: y, Width: point, Height: point}, changePointColor(snapshot))
+						}
 					}
-					canvas.Fill(gfx.Rect{X: changeX + 1, Y: y, Width: changeLane - 2, Height: lineHeight}, color)
-				}
-				pointColor := snapshot.ChangeDeletionColor
-				if snapshot.Disabled {
-					pointColor.Alpha *= 0.5
-				}
-				point := max(2, min(changeLane-2, lineHeight*0.3))
-				pointX := changeX + (changeLane-point)/2
-				if entry.DeletedAbove {
-					canvas.Fill(gfx.Rect{X: pointX, Y: y, Width: point, Height: point}, pointColor)
-				}
-				if entry.DeletedBelow {
-					canvas.Fill(gfx.Rect{X: pointX, Y: y + lineHeight - point, Width: point, Height: point}, pointColor)
+					if lastOfLine && entry.DeletedBelow {
+						canvas.Fill(gfx.Rect{X: pointX, Y: y + lineHeight - point, Width: point, Height: point}, changePointColor(snapshot))
+					}
 				}
 			}
 		}
@@ -1291,4 +1299,13 @@ func (command CodeEditorCommand) Apply(editor *text.Editor) bool {
 		return false
 	}
 	return true
+}
+
+// changePointColor returns the deletion-point colour, dimmed for a disabled editor.
+func changePointColor(snapshot CodeEditorSnapshot) gfx.Color {
+	color := snapshot.ChangeDeletionColor
+	if snapshot.Disabled {
+		color.Alpha *= 0.5
+	}
+	return color
 }

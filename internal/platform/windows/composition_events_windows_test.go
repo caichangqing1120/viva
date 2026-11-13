@@ -4,6 +4,8 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"unicode/utf16"
+	"unsafe"
 
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/internal/platform"
@@ -179,6 +181,197 @@ func TestCompositionResultDoesNotSuppressAnIdenticalOrdinaryCharacter(t *testing
 	if state.err != nil || editor.String() != "arr" || len(*events) != 3 || (*events)[2].CompositionPhase != text.CompositionNone {
 		t.Fatalf("ordinary character after result: text=%q events=%+v err=%v", editor.String(), *events, state.err)
 	}
+	windowProc(state.window, wmChar, 0xd801, 0)
+	windowProc(state.window, wmChar, 0xdc37, 0)
+	if state.err != nil || editor.String() != "arr\U00010437" || len(*events) != 4 || state.pendingHighSurrogate != 0 {
+		t.Fatalf("UTF-16 character after result: text=%q events=%+v err=%v", editor.String(), *events, state.err)
+	}
+}
+
+func TestCompositionMessageDoesNotContinueIntoAReplacementInput(t *testing.T) {
+	for _, name := range []string{"replacement", "same target", "disabled", "multiline", "placed"} {
+		t.Run(name, func(t *testing.T) {
+			editor := text.NewEditor("a")
+			if !editor.EnableTentativeComposition() {
+				t.Fatal("could not enable fixture capability")
+			}
+			editor.MoveTo(1, false)
+			state, events := compositionMessageWindow(t, editor)
+			state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+			foreign := 0
+			state.config.OnRedraw = func() (platform.Frame, error) {
+				var input *platform.TextInput
+				if name != "disabled" {
+					next := testTextInput("other", 0)
+					next.Target = gfx.Item(2)
+					if name == "same target" {
+						next.Target = state.textInput.Target
+						next.State.TentativeComposition = true
+					}
+					if name == "multiline" || name == "placed" {
+						next = state.textInput
+						next.Multiline = name == "multiline"
+						next.Placed = name == "placed"
+					}
+					next.OnEvent = func(platform.TextEvent) (platform.TextState, error) {
+						foreign++
+						return next.State, nil
+					}
+					input = &next
+				}
+				return platform.Frame{TextInput: platform.TextInputUpdate{Changed: true, Input: input}}, nil
+			}
+			state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+			if state.err != nil || editor.String() != "ar" || len(*events) != 2 || foreign != 0 {
+				t.Fatalf("message reached a new owner: text=%q events=%+v foreign=%d err=%v", editor.String(), *events, foreign, state.err)
+			}
+		})
+	}
+}
+
+func TestCompositionMessageContinuesAfterGeometryOnlyRedraw(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, events := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	state.config.OnRedraw = func() (platform.Frame, error) {
+		next := state.textInput
+		next.CaretX += 10
+		next.Width += 10
+		return platform.Frame{TextInput: platform.TextInputUpdate{Changed: true, Input: &next}}, nil
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+	if state.err != nil || len(*events) != 3 || editor.String() != "ary" || !state.textState.Composing {
+		t.Fatalf("geometry redraw lost next preedit: text=%q events=%+v err=%v", editor.String(), *events, state.err)
+	}
+}
+
+func TestCompositionMessageDoesNotOverwriteAReentrantUpdate(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, events := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	reentered := false
+	state.config.OnRedraw = func() (platform.Frame, error) {
+		if !reentered {
+			reentered = true
+			state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "z"})
+		}
+		return platform.Frame{}, nil
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+	if state.err != nil || len(*events) != 3 || editor.String() != "arz" || state.textState.Value != "arz" {
+		t.Fatalf("older tail overwrote reentrant update: text=%q state=%+v events=%+v err=%v", editor.String(), state.textState, *events, state.err)
+	}
+}
+
+func TestCompositionFailedResultReadStillAllowsEndCancellation(t *testing.T) {
+	for _, failure := range []string{"negative length", "odd length", "negative write", "odd write", "oversized write"} {
+		t.Run(failure, func(t *testing.T) {
+			editor := text.NewEditor("abc")
+			if !editor.EnableTentativeComposition() {
+				t.Fatal("could not enable fixture capability")
+			}
+			editor.SetSelection(text.Range{Start: 1, End: 2})
+			state, events := compositionMessageWindow(t, editor)
+			state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+			read := func(args ...uintptr) (uintptr, uintptr, error) {
+				if args[2] == 0 {
+					switch failure {
+					case "negative length":
+						return ^uintptr(0), 0, nil
+					case "odd length":
+						return 3, 0, nil
+					}
+					return 4, 0, nil
+				}
+				switch failure {
+				case "negative write":
+					return ^uintptr(0), 0, nil
+				case "odd write":
+					return 3, 0, nil
+				default:
+					return 6, 0, nil
+				}
+			}
+			state.handleCompositionData(1, resultString, read)
+			if len(*events) != 1 || editor.String() != "axc" || state.err != nil {
+				t.Fatal("a failed IMM read fabricated a result or damaged the pending state")
+			}
+			windowProc(state.window, wmIMEEnd, 0, 0)
+			if len(*events) != 2 || editor.String() != "ac" || state.textState.Composing || (*events)[1].CompositionPhase != text.CompositionCancel {
+				t.Fatalf("failed read stranded composition: text=%q events=%+v state=%+v", editor.String(), *events, state.textState)
+			}
+			editor.Undo()
+			if editor.String() != "abc" {
+				t.Fatal("failed sampling lost the ordinary deletion's Undo boundary")
+			}
+		})
+	}
+}
+
+func TestCompositionSamplesTheWholeMessageBeforeCallbacks(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, events := compositionMessageWindow(t, editor)
+	sampledCursor := false
+	apply := state.textInput.OnEvent
+	state.textInput.OnEvent = func(event platform.TextEvent) (platform.TextState, error) {
+		if !sampledCursor {
+			t.Error("application callback ran before native sampling finished")
+		}
+		return apply(event)
+	}
+	read := func(args ...uintptr) (uintptr, uintptr, error) {
+		switch args[1] {
+		case compositionCursor:
+			sampledCursor = true
+			return 2, 0, nil
+		case compositionAttr:
+			return 0, 0, nil
+		}
+		value := "r"
+		if args[1] == compositionString {
+			value = "\U00010437x"
+		}
+		units := utf16.Encode([]rune(value))
+		if args[2] != 0 {
+			copy(unsafe.Slice((*uint16)(pointer(args[2])), len(units)), units)
+		}
+		return uintptr(len(units) * 2), 0, nil
+	}
+	state.handleCompositionData(1, resultString|compositionString|compositionCursor, read)
+	if state.err != nil || len(*events) != 2 || editor.String() != "ar\U00010437x" || (*events)[1].MarkedSelection != (text.Range{Start: 1, End: 1}) {
+		t.Fatalf("sampled message/UTF-16 cursor: text=%q events=%+v err=%v", editor.String(), *events, state.err)
+	}
+}
+
+func TestCompositionMessageStopsAfterAHandlerError(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, _ := compositionMessageWindow(t, editor)
+	stop, calls := errors.New("rejected native event"), 0
+	state.textInput.OnEvent = func(event platform.TextEvent) (platform.TextState, error) {
+		calls++
+		event.Apply(editor)
+		return platform.EditorState(editor), stop
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+	if state.err != stop || calls != 1 || editor.String() != "ar" {
+		t.Fatalf("continued a failed message: calls=%d text=%q err=%v", calls, editor.String(), state.err)
+	}
 }
 
 func BenchmarkCompositionMessageDispatch(b *testing.B) {
@@ -199,6 +392,7 @@ func BenchmarkCompositionMessageDispatch(b *testing.B) {
 			for b.Loop() {
 				state.applyIMEComposition(message)
 			}
+			b.ReportMetric(float64(unsafe.Sizeof(windowState{})), "window-B")
 		})
 	}
 }

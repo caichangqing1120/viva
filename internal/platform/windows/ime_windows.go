@@ -679,6 +679,8 @@ type imeCompositionMessage struct {
 	hasTarget             bool
 }
 
+type compositionStringReader func(...uintptr) (uintptr, uintptr, error)
+
 func (state *windowState) handleComposition(flags uintptr) {
 	// An input method that has no context to give, or a composition string it
 	// cannot report, loses that one composition. Closing the window over it would
@@ -688,10 +690,15 @@ func (state *windowState) handleComposition(flags uintptr) {
 		return
 	}
 	defer releaseInputContext.Call(state.window, context)
+	state.handleCompositionData(context, flags, getCompositionString.Call)
+}
+
+func (state *windowState) handleCompositionData(context, flags uintptr, read compositionStringReader) {
 	message := imeCompositionMessage{}
 	if flags&resultString != 0 {
-		value, err := compositionText(context, resultString)
+		value, err := compositionText(context, resultString, read)
 		if err != nil {
+			state.imeComposing, state.imeHasTarget = false, false
 			return
 		}
 		message.result, message.hasResult = value, true
@@ -699,13 +706,13 @@ func (state *windowState) handleComposition(flags uintptr) {
 	// Read the entire native message before an application callback can replace
 	// the input or reset its IMM context while processing the result.
 	if flags&compositionString != 0 {
-		value, err := compositionText(context, compositionString)
+		value, err := compositionText(context, compositionString, read)
 		if err == nil {
 			message.preedit, message.hasPreedit = value, true
-			message.target, message.hasTarget = compositionTarget(context, value)
+			message.target, message.hasTarget = compositionTarget(context, value, read)
 			cursorUnits := 0
 			if flags&compositionCursor != 0 {
-				position, _, _ := getCompositionString.Call(context, compositionCursor, 0, 0)
+				position, _, _ := read(context, compositionCursor, 0, 0)
 				cursorUnits = max(0, int(int32(position)))
 			}
 			cursorRunes := text.NewEditor(value).UTF16ToRuneIndex(cursorUnits)
@@ -716,18 +723,35 @@ func (state *windowState) handleComposition(flags uintptr) {
 }
 
 func (state *windowState) applyIMEComposition(message imeCompositionMessage) {
+	if !state.textEnabled || state.err != nil {
+		return
+	}
+	owner, tentative := state.textInput.Target, state.textState.TentativeComposition
+	secure, terminal := state.textInput.Secure, state.textInput.Terminal
 	if message.hasResult {
 		state.imeComposing, state.imeHasTarget = false, false
-		state.handleTextEvent(platform.TextEvent{Kind: platform.TextInsert, Text: message.result})
-		return
+		event := platform.TextEvent{Kind: platform.TextInsert, Text: message.result}
+		if tentative {
+			event.CompositionPhase = text.CompositionResult
+		}
+		state.handleTextEvent(event)
+		if state.err != nil || !state.textEnabled || state.textInput.Target != owner ||
+			state.textState.TentativeComposition != tentative || state.textInput.Secure != secure ||
+			state.textInput.Terminal != terminal || state.textInput.DisableIME {
+			return
+		}
 	}
 	if message.hasPreedit {
 		state.imeComposing = true
 		state.imeTarget, state.imeHasTarget = message.target, message.hasTarget
-		state.handleTextEvent(platform.TextEvent{
+		event := platform.TextEvent{
 			Kind: platform.TextSetMarked, Text: message.preedit,
 			MarkedSelection: message.selection,
-		})
+		}
+		if tentative {
+			event.CompositionPhase = text.CompositionUpdate
+		}
+		state.handleTextEvent(event)
 	}
 }
 
@@ -778,21 +802,21 @@ func (state *windowState) alignedCaretX(index int) float32 {
 
 // compositionTarget is the clause the input method is converting, as runes of the
 // composition string.
-func compositionTarget(context uintptr, value string) (text.Range, bool) {
-	length, _, _ := getCompositionString.Call(context, compositionAttr, 0, 0)
+func compositionTarget(context uintptr, value string, read compositionStringReader) (text.Range, bool) {
+	length, _, _ := read(context, compositionAttr, 0, 0)
 	if int32(length) <= 0 || length > 1<<16 {
 		return text.Range{}, false
 	}
 	attrs := make([]byte, length)
-	written, _, _ := getCompositionString.Call(context, compositionAttr, uintptr(unsafe.Pointer(&attrs[0])), length)
+	written, _, _ := read(context, compositionAttr, uintptr(unsafe.Pointer(&attrs[0])), length)
 	if int32(written) <= 0 || written > length {
 		return text.Range{}, false
 	}
 	return platform.CompositionTarget(attrs[:written], value)
 }
 
-func compositionText(context uintptr, index uintptr) (string, error) {
-	lengthValue, _, _ := getCompositionString.Call(context, index, 0, 0)
+func compositionText(context uintptr, index uintptr, read compositionStringReader) (string, error) {
+	lengthValue, _, _ := read(context, index, 0, 0)
 	length := int(int32(lengthValue))
 	if length < 0 {
 		return "", fmt.Errorf("windows: read IME composition length %d", length)
@@ -804,7 +828,7 @@ func compositionText(context uintptr, index uintptr) (string, error) {
 		return "", fmt.Errorf("windows: invalid IME composition length %d", length)
 	}
 	values := make([]uint16, length/2)
-	writtenValue, _, _ := getCompositionString.Call(context, index, uintptr(unsafe.Pointer(&values[0])), uintptr(length))
+	writtenValue, _, _ := read(context, index, uintptr(unsafe.Pointer(&values[0])), uintptr(length))
 	written := int(int32(writtenValue))
 	if written < 0 || written > length || written%2 != 0 {
 		return "", fmt.Errorf("windows: invalid IME composition result %d", written)

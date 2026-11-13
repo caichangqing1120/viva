@@ -184,6 +184,10 @@ type CodeEditorSnapshot struct {
 	// sorted while Paint runs; colors come from ChangeColors and
 	// ChangeDeletionColor.
 	ChangeLines []CodeEditorChangeLine
+	// ChangeIndicators paint a small square at the left edge of the text area for
+	// each listed logical line, inside the text rather than in the gutter. They
+	// share ChangeColors and are independent of ChangeLines.
+	ChangeIndicators []CodeEditorChangeLine
 	// ChangeColors holds the bar color for each kind, indexed by kind-1.
 	ChangeColors [4]gfx.Color
 	// ChangeDeletionColor paints deletion points.
@@ -558,6 +562,11 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 	if snapshot.CurrentLine && selectionStart == selectionEnd && len(selectionRanges) == 0 && !placeholder {
 		currentLine = int(editor.rows[caretRow].line)
 	}
+	indicatorIndex := 0
+	if len(snapshot.ChangeIndicators) > 0 && firstRow < len(editor.rows) {
+		firstLine := int(editor.rows[firstRow].line)
+		indicatorIndex = sort.Search(len(snapshot.ChangeIndicators), func(i int) bool { return snapshot.ChangeIndicators[i].Line >= firstLine })
+	}
 	changeIndex := 0
 	if changeLane > 0 && firstRow < len(editor.rows) {
 		changeFirst := int(editor.rows[firstRow].line)
@@ -578,6 +587,23 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 			tint := theme.Foreground
 			tint.Alpha *= 0.05
 			canvas.Fill(gfx.Rect{X: inner.X, Y: y, Width: inner.Width, Height: lineHeight}, tint)
+		}
+		if len(snapshot.ChangeIndicators) > 0 && editor.firstOfLine(index) {
+			for indicatorIndex < len(snapshot.ChangeIndicators) && snapshot.ChangeIndicators[indicatorIndex].Line < int(row.line) {
+				indicatorIndex++
+			}
+			if indicatorIndex < len(snapshot.ChangeIndicators) && snapshot.ChangeIndicators[indicatorIndex].Line == int(row.line) {
+				entry := snapshot.ChangeIndicators[indicatorIndex]
+				indicatorIndex++
+				if entry.Kind >= ChangeReverted && entry.Kind <= ChangeRevertedModified {
+					color := snapshot.ChangeColors[entry.Kind-1]
+					if snapshot.Disabled {
+						color.Alpha *= 0.5
+					}
+					side := min(cellWidth, max(2, lineHeight*0.35))
+					canvas.Fill(gfx.Rect{X: content.X + 1, Y: y + (lineHeight-side)/2, Width: side, Height: side}, color)
+				}
+			}
 		}
 		if changeLane > 0 {
 			// The bar and the top deletion point belong to the line's first row; the

@@ -350,3 +350,54 @@ func (f *codeFixture) lastRowOfLine(line int) int {
 	}
 	return last
 }
+
+// TestCodeEditorChangeIndicatorsRespectGeometry: in-text indicators are drawn at
+// the left edge of the text area, once per line, and do not widen the gutter.
+func TestCodeEditorChangeIndicatorsRespectGeometry(t *testing.T) {
+	fixture := changeFixture("a very long first line that wraps and wraps\nsecond\n")
+	fixture.snapshot.Wrap = true
+	// A short viewport so the scroll below is not clamped away.
+	_, _, rowHeight := fixture.cell()
+	fixture.bounds.Height = 4*rowHeight + 2*codeEditorPadY
+	fixture.paint()
+	content := fixture.editor.content
+	fixture.snapshot.ChangeIndicators = []CodeEditorChangeLine{{Line: 0, Kind: ChangeModified}}
+	fixture.paint()
+	if fixture.editor.content.X != content.X || fixture.editor.content.Width != content.Width {
+		t.Fatalf("indicators changed the text area: %+v -> %+v", content, fixture.editor.content)
+	}
+	dots := fixture.fills(fixture.snapshot.ChangeColors[ChangeModified-1])
+	if len(dots) != 1 {
+		t.Fatalf("wrapped line drew %d indicators", len(dots))
+	}
+	_, _, lineHeight := fixture.cell()
+	firstRow := fixture.rowOfLine(0)
+	wantY := fixture.editor.content.Y + float32(firstRow)*lineHeight + (lineHeight-dots[0].Height)/2
+	if !near(dots[0].X, fixture.editor.content.X+1) || !near(dots[0].Y, wantY) {
+		t.Fatalf("indicator = %+v, want x=%v y=%v", dots[0], fixture.editor.content.X+1, wantY)
+	}
+	// An indicator belongs to its line's first row: scrolling that row out of view
+	// removes it, while a still-visible line keeps and moves its own indicator.
+	fixture.editor.scrollY = lineHeight
+	fixture.paint()
+	if gone := fixture.fills(fixture.snapshot.ChangeColors[ChangeModified-1]); len(gone) != 0 {
+		t.Fatalf("indicator of a scrolled-away row still paints: %+v", gone)
+	}
+	tall := changeFixture(strings.Repeat("row\n", 40))
+	tall.bounds.Height = 10*rowHeight + 2*codeEditorPadY
+	tall.snapshot.ChangeIndicators = []CodeEditorChangeLine{{Line: 1, Kind: ChangeModified}}
+	tall.paint()
+	secondBefore := tall.fills(tall.snapshot.ChangeColors[ChangeModified-1])
+	tall.editor.scrollY = rowHeight
+	tall.paint()
+	secondAfter := tall.fills(tall.snapshot.ChangeColors[ChangeModified-1])
+	if len(secondBefore) != 1 || len(secondAfter) != 1 || !near(secondAfter[0].Y, secondBefore[0].Y-rowHeight) {
+		t.Fatalf("visible indicator did not follow its row: %+v -> %+v", secondBefore, secondAfter)
+	}
+	// Unknown kinds draw no indicator and must not panic.
+	fixture.snapshot.ChangeIndicators = []CodeEditorChangeLine{{Line: 0, Kind: CodeEditorChangeKind(9)}}
+	fixture.paint()
+	if dots := fixture.fills(fixture.snapshot.ChangeColors[0]); len(dots) != 0 {
+		t.Fatalf("unknown kind drew an indicator: %+v", dots)
+	}
+}

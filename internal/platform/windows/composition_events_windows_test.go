@@ -353,6 +353,34 @@ func TestCompositionInputReplacementDoesNotOverwriteNativeCancelReentry(t *testi
 	}
 }
 
+func TestCompositionSupersededFrameDoesNotPublishOldNativeViews(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	state, _ := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	state.web = &webHost{state: state}
+	stale, latest := testTextInput("stale", 0), testTextInput("latest", 0)
+	staleView := platform.NativeView{ID: 2, Bounds: gfx.Rect{Width: 10, Height: 10}}
+	latestView := platform.NativeView{ID: 3, Bounds: gfx.Rect{Width: 20, Height: 20}}
+	presented := 0
+	state.config.FramePresented = func() { presented++ }
+	err := state.frameWithTextAndCancel(platform.Frame{
+		TextInput: platform.TextInputUpdate{Changed: true, Input: &stale}, NativeViews: []platform.NativeView{staleView},
+	}, nil, false, func() {
+		if err := state.frameWithText(platform.Frame{
+			TextInput: platform.TextInputUpdate{Changed: true, Input: &latest}, NativeViews: []platform.NativeView{latestView},
+		}, nil, false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err != nil || state.err != nil || state.textState != latest.State ||
+		len(state.web.rects) != 1 || state.web.rects[0].ID != latestView.ID || presented == 0 {
+		t.Fatalf("superseded frame published: state=%+v views=%+v presented=%d err=%v", state.textState, state.web.rects, presented, err)
+	}
+}
+
 func TestCompositionMessageDoesNotOverwriteAReentrantUpdate(t *testing.T) {
 	editor := text.NewEditor("a")
 	if !editor.EnableTentativeComposition() {
@@ -396,6 +424,48 @@ func TestCompositionMessageDoesNotInstallAReentrantEventStaleAck(t *testing.T) {
 	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
 	if state.err != nil || len(*events) != 3 || editor.String() != "arz" || state.textState != platform.EditorState(editor) {
 		t.Fatalf("stale event acknowledgment: text=%q state=%+v events=%+v err=%v", editor.String(), state.textState, *events, state.err)
+	}
+}
+
+func TestCompositionEmptyResultDoesNotOverwriteSameValueReentrantPreedit(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, events := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	apply := state.textInput.OnEvent
+	state.textInput.OnEvent = func(event platform.TextEvent) (platform.TextState, error) {
+		ack, err := apply(event)
+		if event.CompositionPhase == text.CompositionResult {
+			state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+		}
+		return ack, err
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "", hasPreedit: true, preedit: "y"})
+	if state.err != nil || len(*events) != 3 || editor.String() != "ax" || state.textState != platform.EditorState(editor) ||
+		state.textLabels[state.baseTextLabelCount].Value != "ax" {
+		t.Fatalf("same-value acknowledgment overwritten: editor=%q state=%+v events=%+v err=%v", editor.String(), state.textState, *events, state.err)
+	}
+}
+
+func TestCompositionResultFrameSurvivesReentrantNoopAcknowledgment(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, _ := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	state.config.OnRedraw = func() (platform.Frame, error) {
+		state.handleTextEvent(platform.TextEvent{Kind: platform.TextSetSelection, Selection: editor.Selection()})
+		return platform.Frame{}, nil
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r"})
+	if state.err != nil || editor.String() != "ar" || state.textState != platform.EditorState(editor) ||
+		state.textLabels[state.baseTextLabelCount].Value != "ar" {
+		t.Fatalf("noop acknowledgment lost Result frame: editor=%q state=%+v label=%q err=%v", editor.String(), state.textState, state.textLabels[state.baseTextLabelCount].Value, state.err)
 	}
 }
 

@@ -529,6 +529,10 @@ func (state *windowState) updateIMEAssociation() {
 }
 
 func (state *windowState) prepareFrame(frame platform.Frame, nativeVisualChanged bool) (platform.Frame, bool, error) {
+	return state.prepareFrameWithCancel(frame, nativeVisualChanged, state.cancelNativeComposition)
+}
+
+func (state *windowState) prepareFrameWithCancel(frame platform.Frame, nativeVisualChanged bool, cancelNative func()) (platform.Frame, bool, error) {
 	if frame.TextInput.Changed {
 		if !state.config.DynamicTextInput {
 			return platform.Frame{}, false, fmt.Errorf("windows: dynamic text input update is disabled")
@@ -567,7 +571,7 @@ func (state *windowState) prepareFrame(frame platform.Frame, nativeVisualChanged
 		baseLabels = frame.TextLabels
 	}
 
-	inputChanged, inputStructureChanged, err := state.applyTextInputUpdate(frame.TextInput)
+	inputChanged, inputStructureChanged, err := state.applyTextInputUpdateWithCancel(frame.TextInput, cancelNative)
 	if err != nil {
 		return platform.Frame{}, false, err
 	}

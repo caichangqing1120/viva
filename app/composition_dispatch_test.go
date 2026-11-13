@@ -346,6 +346,21 @@ func TestTentativeStateSnapshotDoesNotRetainTheEditor(t *testing.T) {
 
 var nativeStateBenchmarkSink TextState
 
+func BenchmarkPainterTextAcknowledgment(b *testing.B) {
+	editor := text.NewEditor("a")
+	owner := &painter{activeText: &TextInput{Editor: editor}, nativeText: platform.TextInput{Multiline: true}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	index := 0
+	for b.Loop() {
+		index ^= 1
+		if _, err := owner.applyTextEvent(platform.TextEvent{Kind: platform.TextSetSelection, Selection: text.Range{Start: index, End: index}}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(unsafe.Sizeof(painter{})), "painter-B")
+}
+
 func BenchmarkNativeStateSnapshot(b *testing.B) {
 	for _, enabled := range []bool{false, true} {
 		name := "legacy"

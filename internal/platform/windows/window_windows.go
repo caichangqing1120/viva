@@ -955,6 +955,10 @@ func (state *windowState) frame(frame platform.Frame, err error) {
 // handling it through fail. A caller that presents synchronously (WM_SIZE does)
 // must not present a frame that was never applied.
 func (state *windowState) frameWithText(frame platform.Frame, err error, nativeVisualChanged bool) error {
+	return state.frameWithTextAndCancel(frame, err, nativeVisualChanged, state.cancelNativeComposition)
+}
+
+func (state *windowState) frameWithTextAndCancel(frame platform.Frame, err error, nativeVisualChanged bool, cancelNative func()) error {
 	views := frame.NativeViews
 	if err == nil {
 		state.applyBackdrop()
@@ -964,7 +968,7 @@ func (state *windowState) frameWithText(frame platform.Frame, err error, nativeV
 			}
 		}()
 		var dirty bool
-		frame, dirty, err = state.prepareFrame(frame, nativeVisualChanged)
+		frame, dirty, err = state.prepareFrameWithCancel(frame, nativeVisualChanged, cancelNative)
 		if err == nil {
 			err = state.applyFrame(frame)
 		}

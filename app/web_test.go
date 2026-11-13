@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/vivaui/viva/gfx"
@@ -136,5 +137,89 @@ func TestAPageWithoutASchemeGivesThePlatformNone(t *testing.T) {
 	}
 	if opened.Scheme != nil {
 		t.Fatalf("a page with no scheme got %+v", opened.Scheme)
+	}
+}
+
+func TestNavigationDecisionsReachThePlatform(t *testing.T) {
+	var got platform.WebViewConfig
+	host := &WebHost{native: &platform.WebHost{Open: func(config platform.WebViewConfig) (platform.WebView, error) {
+		got = config
+		return nil, platform.ErrWebViewUnsupported
+	}}}
+	navigate := func(navigation WebNavigation) bool {
+		return navigation.URL == "viva-app://page/" && navigation.MainFrame
+	}
+	newWindow := func(url string) bool { return url == "https://example.com/" }
+	download := func(url string) bool { return url == "viva-app://page/file.txt" }
+	_, err := host.Open(WebViewConfig{
+		URL: "viva-app://page/", Navigate: navigate, NewWindow: newWindow, Download: download,
+		BridgeMainFrameOnly: true,
+	})
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("err = %v", err)
+	}
+	if got.Navigate == nil || !got.Navigate(platform.WebNavigation{URL: "viva-app://page/", MainFrame: true}) {
+		t.Fatal("Navigate is not the application's")
+	}
+	if got.Navigate(platform.WebNavigation{URL: "https://example.com/", MainFrame: true}) {
+		t.Fatal("Navigate let an address through the application refused")
+	}
+	if got.NewWindow == nil || !got.NewWindow("https://example.com/") || got.NewWindow("viva-app://page/") {
+		t.Fatal("NewWindow is not the application's")
+	}
+	if got.Download == nil || !got.Download("viva-app://page/file.txt") || got.Download("https://example.com/file.txt") {
+		t.Fatal("Download is not the application's")
+	}
+	if !got.BridgeMainFrameOnly {
+		t.Fatal("BridgeMainFrameOnly was not copied")
+	}
+}
+
+func TestNavigationDecisionsStayUnset(t *testing.T) {
+	var got platform.WebViewConfig
+	host := &WebHost{native: &platform.WebHost{Open: func(config platform.WebViewConfig) (platform.WebView, error) {
+		got = config
+		return nil, platform.ErrWebViewUnsupported
+	}}}
+	if _, err := host.Open(WebViewConfig{}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("err = %v", err)
+	}
+	if got.Navigate != nil || got.NewWindow != nil || got.Download != nil || got.BridgeMainFrameOnly {
+		t.Fatalf("unset decisions reached the platform as %+v", got)
+	}
+}
+
+func TestNativePresentationOptionsReachThePlatform(t *testing.T) {
+	var got platform.WebViewConfig
+	host := &WebHost{native: &platform.WebHost{Open: func(config platform.WebViewConfig) (platform.WebView, error) {
+		got = config
+		return nil, platform.ErrWebViewUnsupported
+	}}}
+	if _, err := host.Open(WebViewConfig{TopCornerRadius: 24}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("err = %v", err)
+	}
+	if got.TopCornerRadius != 24 {
+		t.Fatalf("TopCornerRadius = %v", got.TopCornerRadius)
+	}
+	for _, invalid := range []float32{-1, float32(math.NaN()), float32(math.Inf(1))} {
+		if _, err := host.Open(WebViewConfig{TopCornerRadius: invalid}); err == nil || errors.Is(err, ErrUnsupported) {
+			t.Fatalf("invalid radius %v was not rejected before the platform", invalid)
+		}
+	}
+}
+
+func TestEphemeralReachesThePlatformAndIsOffByDefault(t *testing.T) {
+	var opened []platform.WebViewConfig
+	host := &WebHost{native: &platform.WebHost{Open: func(config platform.WebViewConfig) (platform.WebView, error) {
+		opened = append(opened, config)
+		return nil, platform.ErrWebViewUnsupported
+	}}}
+	for _, config := range []WebViewConfig{{}, {Ephemeral: true}} {
+		if _, err := host.Open(config); !errors.Is(err, ErrUnsupported) {
+			t.Fatalf("open(%+v): err = %v", config, err)
+		}
+	}
+	if len(opened) != 2 || opened[0].Ephemeral || !opened[1].Ephemeral {
+		t.Fatalf("the platform got %+v, want the flag as the application set it", opened)
 	}
 }

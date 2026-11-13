@@ -58,8 +58,39 @@ type WebViewConfig struct {
 	Proxy string
 	// OnMessage receives what the page posts with window.viva.postMessage(text).
 	OnMessage func(text string)
+	// TopCornerRadius rounds the top two corners in logical pixels; zero keeps a rectangular view.
+	// macOS and Windows clip natively; GTK returns ErrUnsupported for nonzero radii.
+	TopCornerRadius float32
 	// OnLoad reports the page's navigation.
 	OnLoad func(WebLoad)
+	// Navigate decides a navigation before it starts; nil allows every navigation.
+	Navigate func(WebNavigation) bool
+	// NewWindow decides a window.open or target=_blank before it opens; nil refuses it. That is a
+	// change: without this option the engine opened the window itself. True opens the address in
+	// the system's browser, outside the page.
+	NewWindow func(url string) bool
+	// Download decides a download before it starts; nil refuses it. That is a change: without this
+	// option Windows and Linux let the engine save the file. True saves it in the user's downloads
+	// folder.
+	Download func(url string) bool
+	// BridgeMainFrameOnly injects window.viva into the main frame only, so an embedded frame does
+	// not get the bridge. False keeps it in every frame, as today.
+	BridgeMainFrameOnly bool
+	// Ephemeral keeps the page's cookies, storage and caches in memory only, separate from every
+	// other page, and drops them when the page closes: a run of the application leaves nothing the
+	// page kept on disk. A platform without such a store must refuse the page rather than open one
+	// that persists.
+	Ephemeral bool
+}
+
+// WebNavigation is one navigation the page wants to make.
+type WebNavigation struct {
+	// URL is the address being navigated to.
+	URL string
+	// MainFrame is false for a subframe, an iframe.
+	MainFrame bool
+	// UserGesture is true when a click or a key press started it, not a script or a redirect.
+	UserGesture bool
 }
 
 // WebScheme serves a custom URL scheme. Serve is the simple form, Respond adds a status and headers,

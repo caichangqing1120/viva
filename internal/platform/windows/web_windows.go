@@ -6,8 +6,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -33,17 +35,29 @@ const (
 	swpNoActive    = 0x0010
 	swpShow        = 0x0040
 	rgnDiff        = 4
+	rgnOr          = 2
 	webSchemeTLD   = ".viva-app.invalid"
 )
 
 var (
-	webGDI          = systemDLL("gdi32.dll")
-	createRectRgn   = webGDI.NewProc("CreateRectRgn")
-	combineRgn      = webGDI.NewProc("CombineRgn")
-	setWindowRgn    = user.NewProc("SetWindowRgn")
-	getParent       = user.NewProc("GetParent")
-	webHostClass    = "VivaWebHost"
-	webHostRegister sync.Once
+	webGDI             = systemDLL("gdi32.dll")
+	createRectRgn      = webGDI.NewProc("CreateRectRgn")
+	createRoundRectRgn = webGDI.NewProc("CreateRoundRectRgn")
+	combineRgn         = webGDI.NewProc("CombineRgn")
+	setWindowRgn       = user.NewProc("SetWindowRgn")
+	getParent          = user.NewProc("GetParent")
+	webHostClass       = "VivaWebHost"
+	webHostRegister    sync.Once
+
+	shGetKnownFolderPath = shell.NewProc("SHGetKnownFolderPath")
+
+	// ephemeralProfiles numbers the profiles of ephemeral pages. WebView2 derives the off-the-record
+	// profile of an InPrivate page from the regular profile of the same name, so pages that share
+	// the default name share cookies, localStorage and IndexedDB; a name of its own per page keeps
+	// them apart, and the process id keeps two instances of the application apart, which share the
+	// user data folder and so one browser process. Every name formed is far under the 64 characters
+	// WebView2 accepts.
+	ephemeralProfiles atomic.Uint32
 )
 
 // webAnswer is an asynchronous scheme request the runtime is holding open with a deferral, and the
@@ -61,6 +75,12 @@ var (
 	webAnswers    = map[uintptr]*webAnswer{}
 	webAnswerNext uintptr
 )
+
+// folderIDDownloads is FOLDERID_Downloads, the known folder the user keeps downloads in.
+var folderIDDownloads = guid{0x374de290, 0x123f, 0x4565, [8]byte{0x91, 0x64, 0x39, 0xc4, 0x92, 0x5e, 0x46, 0x7b}}
+
+// interfaceWebView4 is IID_ICoreWebView2_4: the interface that adds DownloadStarting to the view.
+var interfaceWebView4 = guid{0x20d02d59, 0x6df2, 0x42dc, [8]byte{0xbd, 0x06, 0xf9, 0x8a, 0x69, 0x4b, 0x13, 0x02}}
 
 // webHost is the pages of one window.
 type webHost struct {
@@ -90,6 +110,10 @@ type windowsWeb struct {
 	// lies over it without being drawn; they pass what they get to the window.
 	covers   []uintptr
 	coverSet []gfx.Rect
+	// failure is why the runtime could not make the page as asked; returned says Open has given
+	// the page to the application already, which then hears of a failure only from the report.
+	failure  error
+	returned bool
 }
 
 func newWebHost(state *windowState, host *platform.WebHost, initial []platform.NativeView) *webHost {
@@ -128,8 +152,22 @@ func (w *webHost) open(config platform.WebViewConfig) (platform.WebView, error) 
 	if w.pages[config.ID] != nil {
 		return nil, fmt.Errorf("windows: a web view with id %d is already open", config.ID)
 	}
-	if _, err := webViewClientLibrary(); err != nil {
+	_, version, err := webViewInstall()
+	if err != nil {
 		return nil, fmt.Errorf("%w: %v", platform.ErrWebViewUnsupported, err)
+	}
+	if config.Ephemeral && version != "" {
+		// ICoreWebView2Environment10 and ICoreWebView2ControllerOptions first ship with Runtime 101
+		// (WebView2 SDK 1.0.1210.39). The version is the one in the install folder the client library
+		// was found in, so it describes the runtime that will load. An older runtime cannot make an
+		// ephemeral page, so it is refused here, synchronously, rather than after Open has handed a
+		// live page to the application: a runtime between 96 and 100 would otherwise accept the
+		// install and only fail the QueryInterface for ICoreWebView2Environment10 later. When the
+		// folder does not name a version, that QueryInterface in createPrivateController is still the
+		// fallback.
+		if parsed, valid := parseWebViewVersion(version); valid && !webViewVersionAtLeast(parsed, webViewEphemeralMinimum) {
+			return nil, fmt.Errorf("%w: an ephemeral page needs WebView2 Runtime 101 (SDK 1.0.1210.39) or newer, and the runtime is %s", platform.ErrWebViewUnsupported, version)
+		}
 	}
 	webHostRegister.Do(func() {
 		name := wide(webHostClass)
@@ -158,6 +196,14 @@ func (w *webHost) open(config platform.WebViewConfig) (platform.WebView, error) 
 		}
 		page.createController(environment)
 	})
+	// The environment may answer inside withEnvironment, before the page's share of it is
+	// recorded above: a page that failed there has not let go of it yet.
+	if page.failure != nil {
+		page.environment.leave()
+		page.environment = nil
+		return nil, page.failure
+	}
+	page.returned = true
 	return page, nil
 }
 
@@ -176,7 +222,63 @@ func (page *windowsWeb) createController(environment uintptr) {
 		page.attach(environment)
 		return 0
 	})
-	comCall(environment, envCreateController, page.window, handler)
+	if !page.config.Ephemeral {
+		comCall(environment, envCreateController, page.window, handler)
+		return
+	}
+	// InPrivate belongs to the controller, not to the environment: the environment is shared by
+	// every page of the user data folder, and the controller is the page's own. InPrivate alone
+	// would still use the default profile name, from which WebView2 derives one off-the-record
+	// profile, so the options also name a profile per page. A runtime too old to offer the options
+	// cannot make an ephemeral page, and must not fall back to a controller that keeps the page's
+	// data on disk.
+	if err := page.createPrivateController(environment, handler); err != nil {
+		page.fail(err)
+	}
+}
+
+// createPrivateController makes the page's controller for an InPrivate profile of its own, through
+// the options of ICoreWebView2Environment10 (WebView2 SDK 1.0.1210.39, Runtime 101 and newer).
+func (page *windowsWeb) createPrivateController(environment, handler uintptr) error {
+	var environment10 uintptr
+	status := comCall(environment, 0, uintptr(unsafe.Pointer(&iidEnvironment10)), uintptr(unsafe.Pointer(&environment10)))
+	if int32(uint32(status)) < 0 || environment10 == 0 {
+		return fmt.Errorf("%w: an ephemeral page needs WebView2 Runtime 101 (SDK 1.0.1210.39) or newer", platform.ErrWebViewUnsupported)
+	}
+	defer comCall(environment10, 2)
+	var options uintptr
+	if status := comCall(environment10, envCreateControllerOptions, uintptr(unsafe.Pointer(&options))); int32(uint32(status)) < 0 || options == 0 {
+		return fmt.Errorf("windows: make the WebView2 controller options: HRESULT %#x", uint32(status))
+	}
+	defer comCall(options, 2)
+	// The profile's metadata lives in the application's user data folder, but its cookies, storage
+	// and caches stay in memory and go with the page. The distinct name is what keeps two ephemeral
+	// pages apart: with the default name WebView2 would derive both from the same regular profile.
+	// The process id keeps two instances of the application apart as well: they share the user data
+	// folder, and with it one browser process, so a counter alone would name both first pages alike.
+	name := wide("viva-ephemeral-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatUint(uint64(ephemeralProfiles.Add(1)), 10))
+	if status := comCall(options, optionsPutProfileName, uintptr(unsafe.Pointer(name))); int32(uint32(status)) < 0 {
+		return fmt.Errorf("windows: name the WebView2 InPrivate profile: HRESULT %#x", uint32(status))
+	}
+	if status := comCall(options, optionsPutInPrivateMode, 1); int32(uint32(status)) < 0 {
+		return fmt.Errorf("windows: turn on WebView2 InPrivate mode: HRESULT %#x", uint32(status))
+	}
+	if status := comCall(environment10, envCreateControllerWithOptions, page.window, options, handler); int32(uint32(status)) < 0 {
+		return fmt.Errorf("windows: create the InPrivate WebView2 controller: HRESULT %#x", uint32(status))
+	}
+	return nil
+}
+
+// fail ends a page the runtime could not make as the application asked: a page that must keep
+// nothing does not run with the shared store instead.
+func (page *windowsWeb) fail(err error) {
+	page.failure = err
+	page.closed = true
+	delete(page.host.pages, page.id)
+	page.release()
+	if page.returned {
+		fmt.Fprintln(os.Stderr, "windows:", err)
+	}
 }
 
 // attach wires the page's events and what it is given, and runs what was asked of it meanwhile.
@@ -191,11 +293,18 @@ func (page *windowsWeb) attach(environment uintptr) {
 		return 0
 	}), uintptr(unsafe.Pointer(&token)))
 	comCall(view, viewAddNavStarting, newHandler(func(_, args uintptr) uintptr {
-		var address uintptr
-		comCall(args, startingGetURI, uintptr(unsafe.Pointer(&address)))
-		page.loaded(platform.WebLoadStarted, wideString(address))
+		page.navigationStarting(args, true)
 		return 0
 	}), uintptr(unsafe.Pointer(&token)))
+	comCall(view, viewAddFrameNavStarting, newHandler(func(_, args uintptr) uintptr {
+		page.navigationStarting(args, false)
+		return 0
+	}), uintptr(unsafe.Pointer(&token)))
+	comCall(view, viewAddNewWindowRequested, newHandler(func(_, args uintptr) uintptr {
+		page.newWindowRequested(args)
+		return 0
+	}), uintptr(unsafe.Pointer(&token)))
+	page.addDownloadHandler()
 	for _, event := range []struct {
 		slot  int
 		phase platform.WebLoadPhase
@@ -208,7 +317,11 @@ func (page *windowsWeb) attach(environment uintptr) {
 			return 0
 		}), uintptr(unsafe.Pointer(&token)))
 	}
-	comCall(view, viewAddScriptOnCreate, uintptr(unsafe.Pointer(wide(platform.WebBridgeScript))), 0)
+	script := platform.WebBridgeScript
+	if page.config.BridgeMainFrameOnly {
+		script = platform.WebBridgeMainFrameOnlyScript
+	}
+	comCall(view, viewAddScriptOnCreate, uintptr(unsafe.Pointer(wide(script))), 0)
 	if scheme := page.config.Scheme; scheme != nil && scheme.Name != "" {
 		comCall(view, viewAddWebResourceReq, newHandler(func(_, args uintptr) uintptr {
 			page.serve(environment, args)
@@ -247,12 +360,122 @@ func (page *windowsWeb) loaded(phase platform.WebLoadPhase, address string) {
 	if page.closed || page.config.OnLoad == nil {
 		return
 	}
+	page.config.OnLoad(platform.WebLoad{Phase: phase, URL: page.appAddress(address)})
+}
+
+// appAddress is an address as the application knows it: the page's own scheme is served as
+// https://<name>.viva-app.invalid/, and a decision or a load report names the address the
+// application wrote.
+func (page *windowsWeb) appAddress(address string) string {
 	if scheme := page.config.Scheme; scheme != nil {
 		if rest, ok := strings.CutPrefix(address, "https://"+scheme.Name+webSchemeTLD+"/"); ok {
-			address = scheme.Name + "://" + rest
+			return scheme.Name + "://" + rest
 		}
 	}
-	page.config.OnLoad(platform.WebLoad{Phase: phase, URL: address})
+	return address
+}
+
+// navigationStarting asks the application about a navigation before the request leaves. A
+// refused navigation is cancelled, so the foreign document is never fetched.
+func (page *windowsWeb) navigationStarting(args uintptr, mainFrame bool) {
+	var address uintptr
+	comCall(args, startingGetURI, uintptr(unsafe.Pointer(&address)))
+	url := wideString(address)
+	allowed := page.config.Navigate == nil
+	if !allowed {
+		var gesture, redirect int32
+		comCall(args, startingGetUserGesture, uintptr(unsafe.Pointer(&gesture)))
+		comCall(args, startingGetRedirected, uintptr(unsafe.Pointer(&redirect)))
+		allowed = page.config.Navigate(platform.WebNavigation{
+			URL:         page.appAddress(url),
+			MainFrame:   mainFrame,
+			UserGesture: gesture != 0 && redirect == 0,
+		})
+	}
+	if !allowed {
+		comCall(args, startingPutCancel, 1)
+		return
+	}
+	// Started is reported only for a navigation the application allows: macOS and Linux start a
+	// load after their policy decision, so a refused one must not leave a Started without a
+	// Committed or Finished. loaded names the address as the application knows it there too.
+	if mainFrame {
+		page.loaded(platform.WebLoadStarted, url)
+	}
+}
+
+// newWindowRequested answers a window.open or target=_blank. The runtime opens its own window
+// unless the request says the application handled it, so an allowed address goes to the system's
+// browser and a refused or nil NewWindow opens nothing.
+func (page *windowsWeb) newWindowRequested(args uintptr) {
+	var address uintptr
+	comCall(args, newWindowGetURI, uintptr(unsafe.Pointer(&address)))
+	url := page.appAddress(wideString(address))
+	comCall(args, newWindowPutHandled, 1)
+	if page.config.NewWindow == nil || !page.config.NewWindow(url) || !platform.OpenableURL(url) {
+		return
+	}
+	_ = OpenURL(url)
+}
+
+// addDownloadHandler watches for downloads through ICoreWebView2_4, which is where DownloadStarting
+// lives. A runtime older than that cannot report one before it starts, so a download there cannot
+// be refused; it is said once rather than pretended away.
+func (page *windowsWeb) addDownloadHandler() {
+	var extended uintptr
+	if err := hresult(comCall(page.view, 0, uintptr(unsafe.Pointer(&interfaceWebView4)), uintptr(unsafe.Pointer(&extended)))); err != nil || extended == 0 {
+		if diag.Enabled(diag.Warn) {
+			diag.Report(diag.Warn, "web", "download", "the WebView2 runtime cannot report downloads (ICoreWebView2_4 is missing); Download cannot refuse them")
+		}
+		return
+	}
+	defer comCall(extended, 2)
+	var token int64
+	comCall(extended, viewAddDownloadStarting, newHandler(func(_, args uintptr) uintptr {
+		page.downloadStarting(args)
+		return 0
+	}), uintptr(unsafe.Pointer(&token)))
+}
+
+// downloadStarting asks the application about a download before the runtime writes it. The result
+// file path is a free name in the user's downloads folder, and the runtime's own download UI is
+// hidden either way.
+func (page *windowsWeb) downloadStarting(args uintptr) {
+	var operation uintptr
+	if comCall(args, downloadArgsGetOperation, uintptr(unsafe.Pointer(&operation))) != 0 || operation == 0 {
+		comCall(args, downloadArgsPutCancel, 1)
+		return
+	}
+	var address uintptr
+	comCall(operation, downloadGetURI, uintptr(unsafe.Pointer(&address)))
+	url := page.appAddress(wideString(address))
+	comCall(args, downloadArgsPutHandled, 1)
+	if page.config.Download == nil || !page.config.Download(url) {
+		comCall(args, downloadArgsPutCancel, 1)
+		return
+	}
+	suggested := ""
+	var result uintptr
+	if comCall(args, downloadArgsGetResultPath, uintptr(unsafe.Pointer(&result))) == 0 && result != 0 {
+		suggested = filepath.Base(wideString(result))
+	}
+	folder := downloadsFolder()
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		comCall(args, downloadArgsPutCancel, 1)
+		return
+	}
+	destination := platform.FreeDownloadPath(folder, platform.DownloadFileName(suggested, url))
+	comCall(args, downloadArgsPutResultPath, uintptr(unsafe.Pointer(wide(destination))))
+}
+
+// downloadsFolder is the user's downloads folder: the known folder, which may have been moved
+// (OneDrive does), or the fallback when the system cannot name it.
+func downloadsFolder() string {
+	var path uintptr
+	if status, _, _ := shGetKnownFolderPath.Call(uintptr(unsafe.Pointer(&folderIDDownloads)), 0, 0, uintptr(unsafe.Pointer(&path))); status == 0 && path != 0 {
+		return wideString(path) // copies and frees the task allocator's string
+	}
+	return platform.DownloadsFolder()
 }
 
 // serve answers a request for the page's scheme, which is served as https://<name>.viva-app.invalid/
@@ -506,6 +729,22 @@ func (w *webHost) layout(page *windowsWeb, force bool) {
 	comCall(page.controller, controllerPutVisible, 1)
 	putBounds(page.controller, rect{Right: width, Bottom: height})
 	region, _, _ := createRectRgn.Call(0, 0, uintptr(width), uintptr(height))
+	logicalRadius := min(max(page.config.TopCornerRadius, 0), view.Bounds.Width/2, view.Bounds.Height)
+	if radius := int32(round(logicalRadius * scale)); radius > 0 {
+		// Union the rounded region with a bottom rectangle to round only the top corners. The rectangle
+		// starts at the top of the bottom arcs, so a radius past half the height still leaves a square bottom.
+		rounded, _, _ := createRoundRectRgn.Call(0, 0, uintptr(width+1), uintptr(height+1), uintptr(2*radius), uintptr(2*radius))
+		bottom, _, _ := createRectRgn.Call(0, uintptr(min(radius, height-radius)), uintptr(width), uintptr(height))
+		if rounded != 0 && bottom != 0 {
+			combineRgn.Call(region, rounded, bottom, rgnOr)
+		}
+		if rounded != 0 {
+			deleteObject.Call(rounded)
+		}
+		if bottom != 0 {
+			deleteObject.Call(bottom)
+		}
+	}
 	for _, cut := range w.cuts {
 		left, top := int32(round((cut.X-view.Bounds.X)*scale)), int32(round((cut.Y-view.Bounds.Y)*scale))
 		right, bottom := int32(round((cut.X+cut.Width-view.Bounds.X)*scale)), int32(round((cut.Y+cut.Height-view.Bounds.Y)*scale))

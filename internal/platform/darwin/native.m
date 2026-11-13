@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "native.h"
+#include "cursor_owner_darwin.h"
 #include "label_geometry.h"
 #include "main_menu_darwin.h"
 
@@ -3906,6 +3907,7 @@ static void viva_encode_scene(
     BOOL _reportedFirstFrame;
     BOOL _profileEnabled;
     NSCursor *_cursor;
+    BOOL _nativeCursorActive;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame
@@ -3959,6 +3961,7 @@ static void viva_encode_scene(
  tentativeComposition:(BOOL)tentativeComposition
     endsComposition:(BOOL)endsComposition;
 - (int)updateTextInput:(viva_text_input_config)textInput;
+- (int)updateTextInput:(viva_text_input_config)textInput keepComposition:(BOOL)keep;
 - (void)setTitlebarHeight:(CGFloat)height;
 - (void)cancelTitlebarDrag;
 - (int)moveTextInputToFrame:(NSRect)frame;
@@ -4333,7 +4336,9 @@ static int viva_navigation_command(SEL selector) {
 // resetCursorRects keeps the chosen shape across layout changes, after which
 // AppKit calls it having discarded the old rectangles.
 - (void)resetCursorRects {
-    if (_cursor != nil) {
+    NSPoint point = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
+    // A full-window cursor rectangle would override WebKit's hand or text cursor.
+    if (_cursor != nil && !viva_view_has_native_cursor(self, point)) {
         [self addCursorRect:self.bounds cursor:_cursor];
     }
 }
@@ -4450,7 +4455,28 @@ static int viva_navigation_command(SEL selector) {
 }
 
 - (void)mouseMoved:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    BOOL native = viva_view_has_native_cursor(self, point);
+    BOOL enteringNative = !_nativeCursorActive && native;
+    BOOL returningToCanvas = _nativeCursorActive && !native;
+    if (native != _nativeCursorActive) {
+        _nativeCursorActive = native;
+        [self.window invalidateCursorRectsForView:self];
+    }
+    // Host tracking areas also cover subviews; native content must not emit canvas moves or set its cursor.
+    if (native) {
+        // The pointer left Viva's content for the page, where moves are not emitted; the control it was over
+        // must not stay hovered.
+        if (enteringNative) {
+            [self emitPointerExit];
+        }
+        return;
+    }
     [self emitPointerEvent:VIVA_POINTER_MOVE fromEvent:event];
+    // Force restoration only when returning ownership; ordinary moves retain the Go cursor cache.
+    if (returningToCanvas && _cursor != nil) {
+        [_cursor set];
+    }
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
@@ -5519,6 +5545,16 @@ static void viva_set_secure_event_input(BOOL on) {
 }
 
 - (int)updateTextInput:(viva_text_input_config)textInput {
+    return [self updateTextInput:textInput keepComposition:NO];
+}
+
+// updateTextInput:keepComposition: mirrors a new editor configuration into the
+// native surface. With keep set, the editor is the one that was already
+// focused and the application acknowledges the same text and selection: a
+// field that grows a row or moves keeps the input method's composition, where
+// an unkept update discards it. The frame, caret, texture and character
+// coordinates still follow, so the candidate window moves with the caret.
+- (int)updateTextInput:(viva_text_input_config)textInput keepComposition:(BOOL)keep {
     if (!_dynamicTextInput) {
         return 4;
     }
@@ -5544,24 +5580,30 @@ static void viva_set_secure_event_input(BOOL on) {
     }
 
     BOOL wasEnabled = _textInputEnabled;
-    BOOL preservesComposition = wasEnabled && _hasMarkedText && textInput.enabled &&
-        _tentativeComposition && textInput.tentative_composition && textInput.has_marked_text;
+    BOOL preservesComposition = keep && wasEnabled && textInput.enabled;
+    if (preservesComposition && _hasMarkedText) {
+        // While a composition is live it survives only when the platform still
+        // reports the same tentative marked text, so a replaced editor's marked
+        // surface is released instead of being carried over.
+        preservesComposition = _tentativeComposition && textInput.tentative_composition && textInput.has_marked_text;
+    }
     if (wasEnabled && _hasMarkedText && !preservesComposition) {
         // Replacing the editor releases the old native marked surface. A tag
         // for the replaced composition is produced by the Go bridge before it
         // swaps the handler, so this side must not report a second one.
         [self endNativeCompositionNotifying:NO];
     }
+    _textSelectionDragging = NO;
+    [self stopCaretBlink];
     if (!preservesComposition) {
         _textInputEnabled = NO;
         [self syncSecureEventInput];
+        if (wasEnabled) {
+            [self.inputContext discardMarkedText];
+            [self.inputContext deactivate];
+        }
+        _hasMarkedText = NO;
     }
-    _textSelectionDragging = NO;
-    [self stopCaretBlink];
-    if (wasEnabled && !preservesComposition) {
-        [self.inputContext deactivate];
-    }
-    _hasMarkedText = NO;
 
     if (!textInput.enabled) {
         _textSecure = NO;
@@ -5632,6 +5674,13 @@ static void viva_set_secure_event_input(BOOL on) {
     _caretVisible = YES;
     if (![self rebuildTextTexture]) {
         return 3;
+    }
+    if (keep) {
+        // The input context stays active and composing; only where it points
+        // changed.
+        [self.inputContext invalidateCharacterCoordinates];
+        [self restartCaretBlink];
+        return 0;
     }
     [self.window makeFirstResponder:self];
     if (!preservesComposition) {
@@ -7750,6 +7799,15 @@ int viva_view_update_text_input(void *view, viva_text_input_config text_input) {
     }
     @autoreleasepool {
         return [(VivaMetalView *)view updateTextInput:text_input];
+    }
+}
+
+int viva_view_update_text_input_keeping_composition(void *view, viva_text_input_config text_input) {
+    if (view == NULL) {
+        return 1;
+    }
+    @autoreleasepool {
+        return [(VivaMetalView *)view updateTextInput:text_input keepComposition:YES];
     }
 }
 

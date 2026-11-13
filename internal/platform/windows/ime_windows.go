@@ -548,6 +548,7 @@ func (state *windowState) prepareFrameWithCancel(frame platform.Frame, nativeVis
 	oldBaseLabels := state.baseTextLabelCount
 	baseRectangles := state.textRectangles[:oldBaseRectangles]
 	baseLabels := state.textLabels[:oldBaseLabels]
+	partialRectangles := false
 
 	if !frame.Update.Empty() {
 		if frame.Update.First < 0 || frame.Update.Count < 0 || frame.Update.First > len(frame.Rectangles) || frame.Update.Count > len(frame.Rectangles)-frame.Update.First {
@@ -567,7 +568,7 @@ func (state *windowState) prepareFrameWithCancel(frame platform.Frame, nativeVis
 			if len(frame.Rectangles) != oldBaseRectangles {
 				return platform.Frame{}, false, fmt.Errorf("windows: canvas rectangle count shrank without rebuild")
 			}
-			copy(state.textRectangles[frame.Update.First:frame.Update.First+frame.Update.Count], frame.Rectangles[frame.Update.First:frame.Update.First+frame.Update.Count])
+			partialRectangles = true
 		}
 	}
 	if frame.TextLabels != nil {
@@ -580,6 +581,9 @@ func (state *windowState) prepareFrameWithCancel(frame platform.Frame, nativeVis
 	}
 	if frame.TextInput.Changed && !inputChanged {
 		return platform.Frame{}, false, errSupersededTextFrame
+	}
+	if partialRectangles {
+		copy(state.textRectangles[frame.Update.First:frame.Update.First+frame.Update.Count], frame.Rectangles[frame.Update.First:frame.Update.First+frame.Update.Count])
 	}
 	state.baseRectangleCount = len(baseRectangles)
 	state.baseTextLabelCount = len(baseLabels)

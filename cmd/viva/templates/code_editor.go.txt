@@ -93,6 +93,11 @@ type CodeEditorFoldMarker struct {
 	Label     string
 }
 
+// changeLaneMinimum is the narrowest change-history lane the component paints.
+// A narrower lane would be clipped by the code clip or overlap its deletion
+// points, so a caller's smaller width is widened to this.
+const changeLaneMinimum float32 = 2
+
 // CodeEditorMaxHighlightedLine is the longest line, in bytes, that is handed to
 // the highlighter. A longer one, such as a minified file's only line, is painted
 // plain: highlighting it would cost a megabyte of work for every frame.
@@ -372,9 +377,11 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 	// The automatic gutter sizes its lanes from the text metrics; a caller's
 	// CodeEditorGutter replaces those formulas lane by lane.
 	inset := theme.Metrics.TextInsetX()
+	// The lane never narrows below changeLaneMinimum: a narrower lane would be
+	// clipped by the code clip or overflow its own deletion points.
 	changeLane := float32(0)
 	if len(snapshot.ChangeLines) > 0 {
-		changeLane = max(3, min(cellWidth*0.4, 8))
+		changeLane = max(changeLaneMinimum, min(cellWidth*0.4, 8))
 	}
 	markerLane := float32(0)
 	if snapshot.MarkerGutter || len(snapshot.GutterMarkers) > 0 {
@@ -391,8 +398,11 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 		inset = max(custom.Inset, 0)
 		markerLane = max(custom.Marker, 0)
 		changeLane = max(custom.Change, 0)
+		if changeLane > 0 {
+			changeLane = max(changeLane, changeLaneMinimum)
+		}
 		if changeLane == 0 && len(snapshot.ChangeLines) > 0 {
-			changeLane = max(3, min(cellWidth*0.4, 8))
+			changeLane = max(changeLaneMinimum, min(cellWidth*0.4, 8))
 		}
 		if markerLane == 0 && len(snapshot.GutterMarkers) > 0 {
 			// Markers must stay somewhere: a zero width omits an empty lane, not
@@ -585,7 +595,7 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 					// Keep the cursor on this entry: the last row may come later.
 					barInset := min(float32(1), max(0, (changeLane-1)/2))
 					barWidth := changeLane - 2*barInset
-					point := min(max(1, changeLane-2), max(1, lineHeight*0.3))
+					point := min(changeLane, max(1, lineHeight*0.3))
 					pointX := changeX + (changeLane-point)/2
 					if firstOfLine {
 						if entry.Kind >= ChangeReverted && entry.Kind <= ChangeRevertedModified && barWidth > 0 {

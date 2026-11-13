@@ -116,7 +116,10 @@ func TestCodeEditorChangeDecorationsRespectGeometry(t *testing.T) {
 
 	t.Run("vertical scroll moves bars with their rows", func(t *testing.T) {
 		fixture := changeFixture(strings.Repeat("row\n", 60))
-		fixture.snapshot.ChangeLines = []CodeEditorChangeLine{{Line: 5, Kind: ChangeModified}}
+		// A short viewport: with 600 px the whole document fits and scrollY clamps.
+		_, _, rowHeight := fixture.cell()
+		fixture.bounds.Height = 5*rowHeight + 2*codeEditorPadY
+		fixture.snapshot.ChangeLines = []CodeEditorChangeLine{{Line: 2, Kind: ChangeModified}}
 		fixture.paint()
 		before := fixture.fills(fixture.snapshot.ChangeColors[ChangeModified-1])
 		if len(before) != 1 {
@@ -227,20 +230,34 @@ func TestCodeEditorChangeDecorationsRespectGeometry(t *testing.T) {
 		fixture.snapshot.Gutter = &CodeEditorGutter{Change: 14, Marker: 8, Bookmark: 8, LineNumberPadding: 4, Fold: 16}
 		fixture.paint()
 		bars := fixture.fills(fixture.snapshot.ChangeColors[ChangeModified-1])
-		if len(bars) != 1 || bars[0].Width <= 0 || bars[0].Width >= 14 {
-			t.Fatalf("custom lane bar = %+v, want a bar inside the 14 px lane", bars)
+		if len(bars) != 1 || !near(bars[0].Width, 12) {
+			t.Fatalf("custom lane bar = %+v, want a 12 px bar inside the 14 px lane", bars)
+		}
+		if !near(bars[0].X, fixture.bounds.X+1) {
+			t.Fatalf("custom lane bar x = %v, want %v", bars[0].X, fixture.bounds.X+1)
 		}
 	})
 
-	t.Run("narrow custom lanes never paint inside a negative or zero width", func(t *testing.T) {
-		for _, width := range []float32{1, 2, 3} {
+	t.Run("narrow custom lanes clamp to the minimum and never overflow", func(t *testing.T) {
+		for _, width := range []float32{0.5, 1, 2, 3} {
 			fixture := changeFixture("one\ntwo\n")
 			fixture.snapshot.ChangeLines = []CodeEditorChangeLine{{Line: 0, Kind: ChangeModified, DeletedBelow: true}}
 			fixture.snapshot.Gutter = &CodeEditorGutter{Change: width, Marker: 8, Bookmark: 8, LineNumberPadding: 4, Fold: 16}
 			fixture.paint()
+			lane := max(width, changeLaneMinimum)
 			for _, rectangle := range fixture.canvas.Rectangles() {
 				if rectangle.Bounds.Width < 0 || rectangle.Bounds.Height < 0 {
 					t.Fatalf("lane width %v painted a negative rectangle: %+v", width, rectangle.Bounds)
+				}
+			}
+			laneOrigin := fixture.bounds.X + fixture.snapshot.Gutter.Inset
+			bars := fixture.fills(fixture.snapshot.ChangeColors[ChangeModified-1])
+			if len(bars) != 1 || bars[0].Width > lane || bars[0].X < laneOrigin || bars[0].X+bars[0].Width > laneOrigin+lane+0.01 {
+				t.Fatalf("lane width %v bar = %+v (lane %v at %v)", width, bars, lane, laneOrigin)
+			}
+			for _, point := range fixture.fills(fixture.snapshot.ChangeDeletionColor) {
+				if point.X < laneOrigin || point.X+point.Width > laneOrigin+lane+0.01 {
+					t.Fatalf("lane width %v deletion point %+v overflows the lane", width, point)
 				}
 			}
 		}

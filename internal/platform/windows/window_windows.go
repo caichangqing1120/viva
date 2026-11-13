@@ -124,6 +124,9 @@ type windowState struct {
 	// imeEpoch invalidates an older message tail when callbacks replace the
 	// input or reenter native input delivery.
 	imeEpoch uint64
+	// textRevision advances only when an acknowledgment or input owner changes;
+	// an End that merely stops an IMM message tail must not discard its Result.
+	textRevision uint64
 	// imeDisabled says the window's input-method context is disassociated, and
 	// imeContext holds the context to give back when it returns. A surface that
 	// shows another machine's desktop asks for it (platform.TextInput.DisableIME):

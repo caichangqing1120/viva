@@ -372,9 +372,9 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 		return platform.Frame{}, false, nil
 	}
 	previous := state.textState
-	epoch := state.imeEpoch
+	revision := state.textRevision
 	next, err := state.textInput.OnEvent(event)
-	if err == nil && state.imeEpoch != epoch {
+	if err == nil && state.textRevision != revision {
 		return platform.Frame{}, false, nil
 	}
 	if err == nil {
@@ -391,6 +391,9 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 		state.imeEpoch++
 		state.imeComposing, state.imeHasTarget = false, false
 	}
+	if state.textState != next {
+		state.textRevision++
+	}
 	state.textState = next
 	state.textInput.State = next
 	if cancelNative {
@@ -405,10 +408,10 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 	if err := state.restartCaretTimer(); err != nil {
 		return platform.Frame{}, false, err
 	}
-	epoch = state.imeEpoch
+	revision = state.textRevision
 	if state.config.OnRedraw != nil {
 		frame, err := state.config.OnRedraw()
-		if err == nil && state.imeEpoch != epoch {
+		if err == nil && state.textRevision != revision {
 			return platform.Frame{}, false, nil
 		}
 		return frame, true, err
@@ -461,8 +464,15 @@ func (state *windowState) applyTextInputUpdateWithCancel(update platform.TextInp
 		state.textInput.Multiline != update.Input.Multiline || state.textInput.Secure != update.Input.Secure ||
 		state.textInput.Terminal != update.Input.Terminal || state.textInput.Placed != update.Input.Placed ||
 		state.textState != update.Input.State.WithoutRedraw()
+	if replaced {
+		state.textRevision++
+	}
+	revision := state.textRevision
 	if wasEnabled && replaced {
 		state.cancelCompositionWith(cancelNative)
+		if state.textRevision != revision {
+			return false, false, nil
+		}
 	}
 	if replaced {
 		state.pendingHighSurrogate = 0
@@ -561,6 +571,9 @@ func (state *windowState) prepareFrame(frame platform.Frame, nativeVisualChanged
 	if err != nil {
 		return platform.Frame{}, false, err
 	}
+	if frame.TextInput.Changed && !inputChanged {
+		return platform.Frame{}, false, nil
+	}
 	state.baseRectangleCount = len(baseRectangles)
 	state.baseTextLabelCount = len(baseLabels)
 	extraRectangles, extraLabels := 0, 0
@@ -619,6 +632,7 @@ func mergeRenderUpdates(left, right render.Update) render.Update {
 }
 
 func (state *windowState) cancelComposition() {
+	state.textRevision++
 	state.cancelCompositionWith(state.cancelNativeComposition)
 }
 

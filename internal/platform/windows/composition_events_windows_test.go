@@ -457,13 +457,19 @@ func TestCompositionResultFrameSurvivesReentrantNoopAcknowledgment(t *testing.T)
 	}
 	editor.MoveTo(1, false)
 	state, _ := compositionMessageWindow(t, editor)
+	state.textInput.Terminal, state.textInput.CellWidth, state.textInput.Baseline = true, 8, 12
 	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	redraws := 0
 	state.config.OnRedraw = func() (platform.Frame, error) {
+		redraws++
+		if redraws > 1 {
+			t.Fatal("unchanged terminal acknowledgment requested another redraw")
+		}
 		state.handleTextEvent(platform.TextEvent{Kind: platform.TextSetSelection, Selection: editor.Selection()})
 		return platform.Frame{}, nil
 	}
 	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r"})
-	if state.err != nil || editor.String() != "ar" || state.textState != platform.EditorState(editor) ||
+	if state.err != nil || redraws != 1 || editor.String() != "ar" || state.textState != platform.EditorState(editor) ||
 		state.textLabels[state.baseTextLabelCount].Value != "ar" {
 		t.Fatalf("noop acknowledgment lost Result frame: editor=%q state=%+v label=%q err=%v", editor.String(), state.textState, state.textLabels[state.baseTextLabelCount].Value, state.err)
 	}

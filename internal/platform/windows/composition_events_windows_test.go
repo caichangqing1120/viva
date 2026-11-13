@@ -10,6 +10,7 @@ import (
 
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/internal/platform"
+	"github.com/vivaui/viva/internal/render"
 	"github.com/vivaui/viva/text"
 )
 
@@ -359,6 +360,10 @@ func TestCompositionSupersededFrameDoesNotPublishOldNativeViews(t *testing.T) {
 		t.Fatal("could not enable fixture capability")
 	}
 	state, _ := compositionMessageWindow(t, editor)
+	base := render.Rectangle{X: 1, Width: 10, Height: 10}
+	if err := state.frameWithText(platform.Frame{Rectangles: []render.Rectangle{base}, Update: render.Update{Count: 1, Rebuild: true}}, nil, false); err != nil {
+		t.Fatal(err)
+	}
 	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
 	state.web = &webHost{state: state}
 	stale, latest := testTextInput("stale", 0), testTextInput("latest", 0)
@@ -368,6 +373,7 @@ func TestCompositionSupersededFrameDoesNotPublishOldNativeViews(t *testing.T) {
 	state.config.FramePresented = func() { presented++ }
 	err := state.frameWithTextAndCancel(platform.Frame{
 		TextInput: platform.TextInputUpdate{Changed: true, Input: &stale}, NativeViews: []platform.NativeView{staleView},
+		Rectangles: []render.Rectangle{{X: 2, Width: 10, Height: 10}}, Update: render.Update{Count: 1},
 	}, nil, false, func() {
 		if err := state.frameWithText(platform.Frame{
 			TextInput: platform.TextInputUpdate{Changed: true, Input: &latest}, NativeViews: []platform.NativeView{latestView},
@@ -376,8 +382,8 @@ func TestCompositionSupersededFrameDoesNotPublishOldNativeViews(t *testing.T) {
 		}
 	})
 	if err != nil || state.err != nil || state.textState != latest.State ||
-		len(state.web.rects) != 1 || state.web.rects[0].ID != latestView.ID || presented == 0 {
-		t.Fatalf("superseded frame published: state=%+v views=%+v presented=%d err=%v", state.textState, state.web.rects, presented, err)
+		len(state.web.rects) != 1 || state.web.rects[0].ID != latestView.ID || presented == 0 || state.textRectangles[0] != base {
+		t.Fatalf("superseded frame published: state=%+v views=%+v rectangle=%+v presented=%d err=%v", state.textState, state.web.rects, state.textRectangles[0], presented, err)
 	}
 }
 

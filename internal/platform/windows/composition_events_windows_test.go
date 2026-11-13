@@ -11,6 +11,7 @@ import (
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/internal/render"
+	"github.com/vivaui/viva/internal/scene"
 	"github.com/vivaui/viva/text"
 )
 
@@ -360,7 +361,7 @@ func TestCompositionSupersededFrameDoesNotPublishOldNativeViews(t *testing.T) {
 		t.Fatal("could not enable fixture capability")
 	}
 	state, _ := compositionMessageWindow(t, editor)
-	base := render.Rectangle{X: 1, Width: 10, Height: 10}
+	base := render.Rectangle{Bounds: scene.Rect{X: 1, Width: 10, Height: 10}}
 	if err := state.frameWithText(platform.Frame{Rectangles: []render.Rectangle{base}, Update: render.Update{Count: 1, Rebuild: true}}, nil, false); err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +374,7 @@ func TestCompositionSupersededFrameDoesNotPublishOldNativeViews(t *testing.T) {
 	state.config.FramePresented = func() { presented++ }
 	err := state.frameWithTextAndCancel(platform.Frame{
 		TextInput: platform.TextInputUpdate{Changed: true, Input: &stale}, NativeViews: []platform.NativeView{staleView},
-		Rectangles: []render.Rectangle{{X: 2, Width: 10, Height: 10}}, Update: render.Update{Count: 1},
+		Rectangles: []render.Rectangle{{Bounds: scene.Rect{X: 2, Width: 10, Height: 10}}}, Update: render.Update{Count: 1},
 	}, nil, false, func() {
 		if err := state.frameWithText(platform.Frame{
 			TextInput: platform.TextInputUpdate{Changed: true, Input: &latest}, NativeViews: []platform.NativeView{latestView},

@@ -304,6 +304,53 @@ func TestCompositionMessageDoesNotContinueAfterReentrantEnd(t *testing.T) {
 	if state.err != nil || len(*events) != 2 || editor.String() != "ar" || state.textState.Composing {
 		t.Fatalf("old message resumed after End: text=%q events=%+v state=%+v err=%v", editor.String(), *events, state.textState, state.err)
 	}
+	if state.textState != platform.EditorState(editor) || state.textLabels[state.baseTextLabelCount].Value != state.textState.Value {
+		t.Fatalf("End discarded the only Result frame: editor=%q state=%+v label=%q", editor.String(), state.textState, state.textLabels[state.baseTextLabelCount].Value)
+	}
+}
+
+func TestCompositionResultAcknowledgmentSurvivesReentrantEnd(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, events := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	apply := state.textInput.OnEvent
+	state.textInput.OnEvent = func(event platform.TextEvent) (platform.TextState, error) {
+		ack, err := apply(event)
+		windowProc(state.window, wmIMEEnd, 0, 0)
+		return ack, err
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+	if state.err != nil || len(*events) != 2 || editor.String() != "ar" || state.textState != platform.EditorState(editor) ||
+		state.textLabels[state.baseTextLabelCount].Value != "ar" {
+		t.Fatalf("End discarded Result acknowledgment: editor=%q state=%+v events=%+v err=%v", editor.String(), state.textState, *events, state.err)
+	}
+}
+
+func TestCompositionInputReplacementDoesNotOverwriteNativeCancelReentry(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	state, _ := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	stale := testTextInput("stale replacement", 0)
+	latest := testTextInput("latest replacement", 0)
+	latest.Target = gfx.Item(3)
+	calls := 0
+	_, _, err := state.applyTextInputUpdateWithCancel(platform.TextInputUpdate{Changed: true, Input: &stale}, func() {
+		calls++
+		// Model the synchronous window callback at the IMM cancellation boundary.
+		if _, _, err := state.applyTextInputUpdate(platform.TextInputUpdate{Changed: true, Input: &latest}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err != nil || calls != 1 || state.textInput.Target != latest.Target || state.textState != latest.State {
+		t.Fatalf("cancel reentry overwritten: state=%+v target=%+v calls=%d err=%v", state.textState, state.textInput.Target, calls, err)
+	}
 }
 
 func TestCompositionMessageDoesNotOverwriteAReentrantUpdate(t *testing.T) {

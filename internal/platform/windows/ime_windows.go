@@ -385,12 +385,19 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 	}
 	redraw := platform.TextInputPresentationChanged(state.textInput.Terminal, previous, next)
 	next = next.WithoutRedraw() // a one-shot request, not editor state
-	if next.CompositionIdentity != previous.CompositionIdentity || next.TentativeComposition != previous.TentativeComposition {
-		state.cancelComposition()
-		epoch = state.imeEpoch
+	ownerChanged := next.CompositionIdentity != previous.CompositionIdentity || next.TentativeComposition != previous.TentativeComposition
+	cancelNative := ownerChanged && (state.imeComposing || previous.Composing)
+	if ownerChanged {
+		state.imeEpoch++
+		state.imeComposing, state.imeHasTarget = false, false
 	}
 	state.textState = next
 	state.textInput.State = next
+	if cancelNative {
+		// IMM may reenter the window procedure. Install the new owner first and
+		// never overwrite a newer acknowledgment after cancelling the old one.
+		state.cancelNativeComposition()
+	}
 	if !redraw {
 		return platform.Frame{}, false, nil
 	}
@@ -398,6 +405,7 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 	if err := state.restartCaretTimer(); err != nil {
 		return platform.Frame{}, false, err
 	}
+	epoch = state.imeEpoch
 	if state.config.OnRedraw != nil {
 		frame, err := state.config.OnRedraw()
 		if err == nil && state.imeEpoch != epoch {
@@ -432,6 +440,10 @@ func (state *windowState) resizeTextStorage(rectangleCount, labelCount int) {
 }
 
 func (state *windowState) applyTextInputUpdate(update platform.TextInputUpdate) (bool, bool, error) {
+	return state.applyTextInputUpdateWithCancel(update, state.cancelNativeComposition)
+}
+
+func (state *windowState) applyTextInputUpdateWithCancel(update platform.TextInputUpdate, cancelNative func()) (bool, bool, error) {
 	if !update.Changed {
 		return false, false, nil
 	}
@@ -450,7 +462,7 @@ func (state *windowState) applyTextInputUpdate(update platform.TextInputUpdate) 
 		state.textInput.Terminal != update.Input.Terminal || state.textInput.Placed != update.Input.Placed ||
 		state.textState != update.Input.State.WithoutRedraw()
 	if wasEnabled && replaced {
-		state.cancelComposition()
+		state.cancelCompositionWith(cancelNative)
 	}
 	if replaced {
 		state.pendingHighSurrogate = 0
@@ -607,6 +619,10 @@ func mergeRenderUpdates(left, right render.Update) render.Update {
 }
 
 func (state *windowState) cancelComposition() {
+	state.cancelCompositionWith(state.cancelNativeComposition)
+}
+
+func (state *windowState) cancelCompositionWith(cancelNative func()) {
 	state.imeEpoch++
 	if !state.imeComposing && !state.textState.Composing {
 		return
@@ -615,15 +631,20 @@ func (state *windowState) cancelComposition() {
 	state.imeHasTarget = false
 	state.textState.Composing = false
 	state.textState.Composition = text.Range{}
-	if state.window == 0 {
+	cancelNative()
+}
+
+func (state *windowState) cancelNativeComposition() {
+	window := state.window
+	if window == 0 {
 		return
 	}
-	context, _, _ := getInputContext.Call(state.window)
+	context, _, _ := getInputContext.Call(window)
 	if context == 0 {
 		return
 	}
 	notifyIME.Call(context, notifyComposition, compositionCancel, 0)
-	releaseInputContext.Call(state.window, context)
+	releaseInputContext.Call(window, context)
 }
 
 // caretBlinks reports whether a native caret belongs on screen. Terminal and

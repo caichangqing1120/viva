@@ -562,11 +562,6 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 	if snapshot.CurrentLine && selectionStart == selectionEnd && len(selectionRanges) == 0 && !placeholder {
 		currentLine = int(editor.rows[caretRow].line)
 	}
-	indicatorIndex := 0
-	if len(snapshot.ChangeIndicators) > 0 && firstRow < len(editor.rows) {
-		firstLine := int(editor.rows[firstRow].line)
-		indicatorIndex = sort.Search(len(snapshot.ChangeIndicators), func(i int) bool { return snapshot.ChangeIndicators[i].Line >= firstLine })
-	}
 	changeIndex := 0
 	if changeLane > 0 && firstRow < len(editor.rows) {
 		changeFirst := int(editor.rows[firstRow].line)
@@ -587,23 +582,6 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 			tint := theme.Foreground
 			tint.Alpha *= 0.05
 			canvas.Fill(gfx.Rect{X: inner.X, Y: y, Width: inner.Width, Height: lineHeight}, tint)
-		}
-		if len(snapshot.ChangeIndicators) > 0 && editor.firstOfLine(index) {
-			for indicatorIndex < len(snapshot.ChangeIndicators) && snapshot.ChangeIndicators[indicatorIndex].Line < int(row.line) {
-				indicatorIndex++
-			}
-			if indicatorIndex < len(snapshot.ChangeIndicators) && snapshot.ChangeIndicators[indicatorIndex].Line == int(row.line) {
-				entry := snapshot.ChangeIndicators[indicatorIndex]
-				indicatorIndex++
-				if entry.Kind >= ChangeReverted && entry.Kind <= ChangeRevertedModified {
-					color := snapshot.ChangeColors[entry.Kind-1]
-					if snapshot.Disabled {
-						color.Alpha *= 0.5
-					}
-					side := min(cellWidth, max(2, lineHeight*0.35))
-					canvas.Fill(gfx.Rect{X: content.X + 1, Y: y + (lineHeight-side)/2, Width: side, Height: side}, color)
-				}
-			}
 		}
 		if changeLane > 0 {
 			// The bar and the top deletion point belong to the line's first row; the
@@ -667,6 +645,11 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 			break
 		}
 		paint.row(index, y)
+	}
+	// In-text indicators paint after the text and its selection, so a selected
+	// line's mark stays visible instead of being covered by the selection fill.
+	if len(snapshot.ChangeIndicators) > 0 {
+		paintChangeIndicators(canvas, snapshot, editor, firstRow, content, cellWidth, lineHeight)
 	}
 	canvas.Unclip()
 	canvas.Unclip()
@@ -1344,4 +1327,52 @@ func changePointColor(snapshot CodeEditorSnapshot) gfx.Color {
 		color.Alpha *= 0.5
 	}
 	return color
+}
+
+// paintChangeIndicators draws the in-text change marks for the visible rows: an
+// edition square on the line's first row and deletion squares at the top and
+// bottom edges, so a deletion-only line (Kind ChangeNone) still shows a mark.
+func paintChangeIndicators(canvas *gfx.Canvas, snapshot CodeEditorSnapshot, editor *CodeEditor, firstRow int, content gfx.Rect, cellWidth, lineHeight float32) {
+	rows := editor.rows
+	if len(rows) == 0 || firstRow >= len(rows) {
+		return
+	}
+	scrollY := editor.scrollY
+	index := sort.Search(len(snapshot.ChangeIndicators), func(i int) bool {
+		return snapshot.ChangeIndicators[i].Line >= int(rows[firstRow].line)
+	})
+	side := min(cellWidth, max(2, lineHeight*0.35))
+	point := max(2, side*0.5)
+	for rowIndex := firstRow; rowIndex < len(rows); rowIndex++ {
+		y := content.Y + float32(rowIndex)*lineHeight - scrollY
+		if y >= content.Y+content.Height {
+			return
+		}
+		row := rows[rowIndex]
+		first := editor.firstOfLine(rowIndex)
+		last := rowIndex+1 >= len(rows) || rows[rowIndex+1].line != row.line
+		line := int(row.line)
+		for index < len(snapshot.ChangeIndicators) && snapshot.ChangeIndicators[index].Line < line {
+			index++
+		}
+		if index >= len(snapshot.ChangeIndicators) || snapshot.ChangeIndicators[index].Line != line {
+			continue
+		}
+		entry := snapshot.ChangeIndicators[index]
+		if first {
+			if entry.Kind >= ChangeReverted && entry.Kind <= ChangeRevertedModified {
+				color := snapshot.ChangeColors[entry.Kind-1]
+				if snapshot.Disabled {
+					color.Alpha *= 0.5
+				}
+				canvas.Fill(gfx.Rect{X: content.X + 1, Y: y + (lineHeight-side)/2, Width: side, Height: side}, color)
+			}
+			if entry.DeletedAbove {
+				canvas.Fill(gfx.Rect{X: content.X + 1, Y: y, Width: point, Height: point}, changePointColor(snapshot))
+			}
+		}
+		if last && entry.DeletedBelow {
+			canvas.Fill(gfx.Rect{X: content.X + 1, Y: y + lineHeight - point, Width: point, Height: point}, changePointColor(snapshot))
+		}
+	}
 }

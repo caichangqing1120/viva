@@ -394,10 +394,49 @@ func TestCodeEditorChangeIndicatorsRespectGeometry(t *testing.T) {
 	if len(secondBefore) != 1 || len(secondAfter) != 1 || !near(secondAfter[0].Y, secondBefore[0].Y-rowHeight) {
 		t.Fatalf("visible indicator did not follow its row: %+v -> %+v", secondBefore, secondAfter)
 	}
-	// Unknown kinds draw no indicator and must not panic.
-	fixture.snapshot.ChangeIndicators = []CodeEditorChangeLine{{Line: 0, Kind: CodeEditorChangeKind(9)}}
+	// A deletion-only line (no edition) still shows an indicator mark.
+	fixture.editor.scrollY = 0
+	fixture.snapshot.ChangeIndicators = []CodeEditorChangeLine{{Line: 0, DeletedBelow: true}}
+	fixture.paint()
+	if points := fixture.fills(fixture.snapshot.ChangeDeletionColor); len(points) != 1 {
+		t.Fatalf("deletion-only line drew %d indicator marks", len(points))
+	}
+	// Unknown kinds draw no edition square, keep their deletion mark, and must not
+	// panic on a visible line.
+	fixture.snapshot.ChangeIndicators = []CodeEditorChangeLine{{Line: 0, Kind: CodeEditorChangeKind(9), DeletedAbove: true}}
 	fixture.paint()
 	if dots := fixture.fills(fixture.snapshot.ChangeColors[0]); len(dots) != 0 {
 		t.Fatalf("unknown kind drew an indicator: %+v", dots)
+	}
+	if points := fixture.fills(fixture.snapshot.ChangeDeletionColor); len(points) != 1 {
+		t.Fatalf("unknown kind lost its deletion mark: %d", len(points))
+	}
+}
+
+// TestCodeEditorChangeIndicatorsPaintAboveSelection: the indicator must stay
+// visible when the line is selected, so it is filled after the selection.
+func TestCodeEditorChangeIndicatorsPaintAboveSelection(t *testing.T) {
+	fixture := changeFixture("one\ntwo\n")
+	fixture.snapshot.SelectionStart, fixture.snapshot.SelectionEnd = 0, len("one")
+	fixture.snapshot.ChangeIndicators = []CodeEditorChangeLine{{Line: 0, Kind: ChangeModified}}
+	fixture.paint()
+	rectangles := fixture.canvas.Rectangles()
+	indicator, selection := -1, -1
+	for index, rectangle := range rectangles {
+		if rectangle.Color == fixture.snapshot.ChangeColors[ChangeModified-1] {
+			indicator = index
+		}
+		if rectangle.Color == fixture.theme.Selection {
+			selection = index
+		}
+	}
+	if indicator < 0 {
+		t.Fatal("the indicator was not painted")
+	}
+	if selection < 0 {
+		t.Fatal("the selection was not painted")
+	}
+	if indicator < selection {
+		t.Fatalf("indicator painted at %d before the selection at %d and would be covered", indicator, selection)
 	}
 }

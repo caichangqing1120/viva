@@ -249,6 +249,60 @@ func TestCompositionMessageContinuesAfterGeometryOnlyRedraw(t *testing.T) {
 	}
 }
 
+func TestCompositionMessageDoesNotEnterAnIdenticalNewEditor(t *testing.T) {
+	makeEditor := func() *text.Editor {
+		editor := text.NewEditor("a")
+		if !editor.EnableTentativeComposition() {
+			t.Fatal("could not enable fixture capability")
+		}
+		editor.MoveTo(1, false)
+		return editor
+	}
+	editor, other := makeEditor(), makeEditor()
+	other.ApplyComposition(text.CompositionEvent{Phase: text.CompositionUpdate, Text: "x"})
+	other.ApplyComposition(text.CompositionEvent{Phase: text.CompositionResult, Text: "r"})
+	state, events := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	foreign := 0
+	state.config.OnRedraw = func() (platform.Frame, error) {
+		next := state.textInput
+		next.State = platform.EditorState(other)
+		oldValue := state.textState
+		oldValue.CompositionIdentity = next.State.CompositionIdentity
+		if oldValue != next.State {
+			t.Fatal("replacement fixture differs by more than Editor identity")
+		}
+		next.OnEvent = func(event platform.TextEvent) (platform.TextState, error) {
+			foreign++
+			event.Apply(other)
+			return platform.EditorState(other), nil
+		}
+		return platform.Frame{TextInput: platform.TextInputUpdate{Changed: true, Input: &next}}, nil
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+	if state.err != nil || foreign != 0 || len(*events) != 2 || editor.String() != "ar" || other.String() != "ar" {
+		t.Fatalf("old message entered identical replacement: old=%q new=%q foreign=%d err=%v", editor.String(), other.String(), foreign, state.err)
+	}
+}
+
+func TestCompositionMessageDoesNotContinueAfterReentrantEnd(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, events := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	state.config.OnRedraw = func() (platform.Frame, error) {
+		windowProc(state.window, wmIMEEnd, 0, 0)
+		return platform.Frame{}, nil
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+	if state.err != nil || len(*events) != 2 || editor.String() != "ar" || state.textState.Composing {
+		t.Fatalf("old message resumed after End: text=%q events=%+v state=%+v err=%v", editor.String(), *events, state.textState, state.err)
+	}
+}
+
 func TestCompositionMessageDoesNotOverwriteAReentrantUpdate(t *testing.T) {
 	editor := text.NewEditor("a")
 	if !editor.EnableTentativeComposition() {

@@ -121,6 +121,9 @@ type windowState struct {
 	textRuns                               []gfx.TextRun
 	captionPress                           captionPress
 	imeComposing                           bool
+	// imeEpoch invalidates an older message tail when callbacks replace the
+	// input or reenter native input delivery.
+	imeEpoch uint64
 	// imeDisabled says the window's input-method context is disassociated, and
 	// imeContext holds the context to give back when it returns. A surface that
 	// shows another machine's desktop asks for it (platform.TextInput.DisableIME):
@@ -590,6 +593,7 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 		}
 	case wmIMEStart:
 		if state.textEnabled {
+			state.imeEpoch++
 			state.imeComposing = true
 			state.positionCompositionWindow()
 			return 0
@@ -605,6 +609,9 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 			return result
 		}
 	case wmIMEEnd:
+		if state.textEnabled {
+			state.imeEpoch++
+		}
 		if state.textEnabled && state.imeComposing {
 			state.imeComposing = false
 			state.imeHasTarget = false

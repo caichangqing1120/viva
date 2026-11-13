@@ -355,6 +355,7 @@ func (state *windowState) textPointerEvent(event platform.PointerEvent) (platfor
 }
 
 func (state *windowState) handleTextEvent(event platform.TextEvent) {
+	state.imeEpoch++
 	frame, changed, err := state.textEventFrame(event)
 	if err != nil {
 		state.fail(err)
@@ -595,6 +596,7 @@ func mergeRenderUpdates(left, right render.Update) render.Update {
 }
 
 func (state *windowState) cancelComposition() {
+	state.imeEpoch++
 	if !state.imeComposing && !state.textState.Composing {
 		return
 	}
@@ -694,11 +696,15 @@ func (state *windowState) handleComposition(flags uintptr) {
 }
 
 func (state *windowState) handleCompositionData(context, flags uintptr, read compositionStringReader) {
+	state.imeEpoch++
+	epoch := state.imeEpoch
 	message := imeCompositionMessage{}
 	if flags&resultString != 0 {
 		value, err := compositionText(context, resultString, read)
 		if err != nil {
-			state.imeComposing, state.imeHasTarget = false, false
+			if state.imeEpoch == epoch && !state.textState.TentativeComposition {
+				state.imeComposing, state.imeHasTarget = false, false
+			}
 			return
 		}
 		message.result, message.hasResult = value, true
@@ -719,25 +725,26 @@ func (state *windowState) handleCompositionData(context, flags uintptr, read com
 			message.selection = text.Range{Start: cursorRunes, End: cursorRunes}
 		}
 	}
-	state.applyIMEComposition(message)
+	if state.imeEpoch == epoch {
+		state.applyIMEComposition(message)
+	}
 }
 
 func (state *windowState) applyIMEComposition(message imeCompositionMessage) {
 	if !state.textEnabled || state.err != nil {
 		return
 	}
-	owner, tentative := state.textInput.Target, state.textState.TentativeComposition
-	secure, terminal := state.textInput.Secure, state.textInput.Terminal
+	state.imeEpoch++
+	tentative := state.textState.TentativeComposition
 	if message.hasResult {
 		state.imeComposing, state.imeHasTarget = false, false
 		event := platform.TextEvent{Kind: platform.TextInsert, Text: message.result}
 		if tentative {
 			event.CompositionPhase = text.CompositionResult
 		}
+		epoch := state.imeEpoch + 1 // the acknowledged Result advances it once
 		state.handleTextEvent(event)
-		if state.err != nil || !state.textEnabled || state.textInput.Target != owner ||
-			state.textState.TentativeComposition != tentative || state.textInput.Secure != secure ||
-			state.textInput.Terminal != terminal || state.textInput.DisableIME {
+		if state.imeEpoch != epoch || state.err != nil || !state.textEnabled || state.textInput.DisableIME {
 			return
 		}
 	}
@@ -837,6 +844,7 @@ func compositionText(context uintptr, index uintptr, read compositionStringReade
 }
 
 func (state *windowState) handleUTF16Character(value uint16) {
+	state.imeEpoch++
 	textValue, pending, ready := decodeUTF16Character(state.pendingHighSurrogate, value)
 	state.pendingHighSurrogate = pending
 	if !ready {

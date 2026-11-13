@@ -1277,14 +1277,7 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 			Red: float64(tint.Red), Green: float64(tint.Green),
 			Blue: float64(tint.Blue), Alpha: float64(tint.Alpha),
 		},
-		State: platform.TextState{
-			Value:                input.State.Value,
-			Selection:            platformTextRange(input.State.Selection),
-			SelectionReversed:    input.State.SelectionReversed,
-			Composition:          platformTextRange(input.State.Composition),
-			Composing:            input.State.Composing,
-			TentativeComposition: input.State.TentativeComposition,
-		},
+		State:   platformTextState(input.State).WithoutRedraw(),
 		OnEvent: painter.onTextEvent,
 	}
 	if placement != nil {
@@ -1350,15 +1343,7 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 		}
 	}
 	painter.activeText.State = next
-	native := platform.TextState{
-		Value:                next.Value,
-		Selection:            platformTextRange(next.Selection),
-		SelectionReversed:    next.SelectionReversed,
-		Composition:          platformTextRange(next.Composition),
-		Composing:            next.Composing,
-		TentativeComposition: next.TentativeComposition,
-		Redraw:               next.Redraw,
-	}
+	native := platformTextState(next)
 	// What the platform mirrors back never carries the one-shot request.
 	painter.nativeText.State = native.WithoutRedraw()
 	painter.activeText.State.Redraw = false

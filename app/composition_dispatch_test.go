@@ -1,7 +1,10 @@
 package app
 
 import (
+	"runtime"
 	"testing"
+	"time"
+	"unsafe"
 
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/internal/platform"
@@ -174,5 +177,136 @@ func TestPainterFocusedStateCarriesTentativeCapability(t *testing.T) {
 	painter.syncTextInput()
 	if painter.nativeText.State.TentativeComposition || TextStateOf(editor).TentativeComposition {
 		t.Fatal("passive disabled owner leaked an enabled native snapshot")
+	}
+}
+
+func TestPainterDistinguishesIdenticalTentativeEditorOwners(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		name := "editor"
+		if custom {
+			name = "custom handler"
+		}
+		t.Run(name, func(t *testing.T) {
+			first, second := text.NewEditor("same"), text.NewEditor("same")
+			if !first.EnableTentativeComposition() || !second.EnableTentativeComposition() {
+				t.Fatal("capability setup refused")
+			}
+			current := first
+			var canvas gfx.Canvas
+			config := Config{Title: "composition ownership", Width: 200, Height: 80}
+			config.Paint = func(canvas *gfx.Canvas, size gfx.Size) {
+				canvas.HitWithOptions(gfx.Item(11), gfx.Rect{Width: 120, Height: 24}, "Name", gfx.HitOptions{Role: gfx.RoleTextField})
+			}
+			config.TextInput = func(context TextInputContext) *TextInput {
+				owner := current
+				input := &TextInput{Bounds: context.Bounds, FontSize: 13, Editor: owner}
+				if custom {
+					input.Editor = nil
+					input.State = TextStateOf(owner)
+					input.OnEvent = func(event TextEvent) (TextState, error) {
+						event.Apply(owner)
+						return TextStateOf(owner), nil
+					}
+				}
+				return input
+			}
+			painter := newTestPainter(t, &canvas, config)
+			for _, kind := range []platform.PointerEventKind{platform.PointerMove, platform.PointerDown, platform.PointerUp} {
+				if _, err := painter.pointerEvent(platform.PointerEvent{Kind: kind, X: 10, Y: 10}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if update := painter.syncTextInput(); update.Changed {
+				t.Fatal("the same owner's identical snapshot forced an input replacement")
+			}
+			current = second
+			if update := painter.syncTextInput(); !update.Changed || update.Input == nil {
+				t.Fatal("a different tentative Editor with identical state was not published as a replacement")
+			}
+		})
+	}
+}
+
+func TestTentativeStateSnapshotDoesNotRetainTheEditor(t *testing.T) {
+	released := make(chan struct{})
+	makeSnapshot := func() TextState {
+		editor := text.NewEditor("snapshot remains readable")
+		if !editor.EnableTentativeComposition() {
+			t.Fatal("capability setup refused")
+		}
+		runtime.AddCleanup(editor, func(done chan struct{}) { close(done) }, released)
+		return TextStateOf(editor)
+	}
+	snapshot := makeSnapshot()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		runtime.GC()
+		select {
+		case <-released:
+			if snapshot.Value != "snapshot remains readable" {
+				t.Fatal("reclaiming the Editor invalidated its value snapshot")
+			}
+			runtime.KeepAlive(snapshot)
+			return
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a retained TextState snapshot kept the Editor and its history alive")
+		}
+		runtime.Gosched()
+	}
+}
+
+var nativeStateBenchmarkSink TextState
+
+func BenchmarkNativeStateSnapshot(b *testing.B) {
+	for _, enabled := range []bool{false, true} {
+		name := "legacy"
+		if enabled {
+			name = "tentative"
+		}
+		b.Run(name, func(b *testing.B) {
+			editor := text.NewEditor("state snapshot")
+			if enabled && !editor.EnableTentativeComposition() {
+				b.Fatal("capability setup refused")
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				nativeStateBenchmarkSink = TextStateOf(editor)
+			}
+			b.ReportMetric(float64(unsafe.Sizeof(TextState{})), "app-state-B")
+			b.ReportMetric(float64(unsafe.Sizeof(platform.TextState{})), "native-state-B")
+			runtime.KeepAlive(editor)
+		})
+	}
+}
+
+func BenchmarkNativeStateFirstSnapshot(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		editor := text.NewEditor("first snapshot")
+		if !editor.EnableTentativeComposition() {
+			b.Fatal("capability setup refused")
+		}
+		nativeStateBenchmarkSink = TextStateOf(editor)
+	}
+}
+
+func BenchmarkNativeStateDefaultConstruction(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		editor := text.NewEditor("first snapshot")
+		nativeStateBenchmarkSink = TextStateOf(editor)
+	}
+}
+
+func TestDefaultStateSnapshotPreservesConstructionAllocations(t *testing.T) {
+	allocations := testing.AllocsPerRun(100, func() {
+		editor := text.NewEditor("first snapshot")
+		nativeStateBenchmarkSink = TextStateOf(editor)
+	})
+	if allocations > 2 {
+		t.Fatalf("a default value snapshot exceeded the measured construction baseline: %.0f allocations, want at most 2", allocations)
 	}
 }

@@ -372,7 +372,11 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 		return platform.Frame{}, false, nil
 	}
 	previous := state.textState
+	epoch := state.imeEpoch
 	next, err := state.textInput.OnEvent(event)
+	if err == nil && state.imeEpoch != epoch {
+		return platform.Frame{}, false, nil
+	}
 	if err == nil {
 		err = validateTextState(next)
 	}
@@ -381,6 +385,10 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 	}
 	redraw := platform.TextInputPresentationChanged(state.textInput.Terminal, previous, next)
 	next = next.WithoutRedraw() // a one-shot request, not editor state
+	if next.CompositionIdentity != previous.CompositionIdentity || next.TentativeComposition != previous.TentativeComposition {
+		state.cancelComposition()
+		epoch = state.imeEpoch
+	}
 	state.textState = next
 	state.textInput.State = next
 	if !redraw {
@@ -392,6 +400,9 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 	}
 	if state.config.OnRedraw != nil {
 		frame, err := state.config.OnRedraw()
+		if err == nil && state.imeEpoch != epoch {
+			return platform.Frame{}, false, nil
+		}
 		return frame, true, err
 	}
 	return platform.Frame{}, true, nil
@@ -736,6 +747,7 @@ func (state *windowState) applyIMEComposition(message imeCompositionMessage) {
 	}
 	state.imeEpoch++
 	tentative := state.textState.TentativeComposition
+	owner := state.textState.CompositionIdentity
 	if message.hasResult {
 		state.imeComposing, state.imeHasTarget = false, false
 		event := platform.TextEvent{Kind: platform.TextInsert, Text: message.result}
@@ -744,7 +756,8 @@ func (state *windowState) applyIMEComposition(message imeCompositionMessage) {
 		}
 		epoch := state.imeEpoch + 1 // the acknowledged Result advances it once
 		state.handleTextEvent(event)
-		if state.imeEpoch != epoch || state.err != nil || !state.textEnabled || state.textInput.DisableIME {
+		if state.imeEpoch != epoch || state.err != nil || !state.textEnabled || state.textInput.DisableIME ||
+			state.textState.CompositionIdentity != owner || state.textState.TentativeComposition != tentative {
 			return
 		}
 	}

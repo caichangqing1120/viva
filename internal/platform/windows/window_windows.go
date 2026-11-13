@@ -124,7 +124,7 @@ type windowState struct {
 	// imeEpoch invalidates an older message tail when callbacks replace the
 	// input or reenter native input delivery.
 	imeEpoch uint64
-	// textRevision advances only when an acknowledgment or input owner changes;
+	// textRevision advances for every installed acknowledgment or input owner;
 	// an End that merely stops an IMM message tail must not discard its Result.
 	textRevision uint64
 	// imeDisabled says the window's input-method context is disassociated, and
@@ -962,13 +962,17 @@ func (state *windowState) frameWithTextAndCancel(frame platform.Frame, err error
 	views := frame.NativeViews
 	if err == nil {
 		state.applyBackdrop()
+		var dirty bool
+		frame, dirty, err = state.prepareFrameWithCancel(frame, nativeVisualChanged, cancelNative)
+		if err == errSupersededTextFrame {
+			state.framePresented()
+			return nil
+		}
 		defer func() {
 			if state.web != nil && state.ready {
 				state.web.frame(views)
 			}
 		}()
-		var dirty bool
-		frame, dirty, err = state.prepareFrameWithCancel(frame, nativeVisualChanged, cancelNative)
 		if err == nil {
 			err = state.applyFrame(frame)
 		}

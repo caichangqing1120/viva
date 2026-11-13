@@ -1,6 +1,7 @@
 package windows
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf16"
@@ -42,6 +43,8 @@ var setCompositionWindow = imm.NewProc("ImmSetCompositionWindow")
 var notifyIME = imm.NewProc("ImmNotifyIME")
 var setCandidateWindow = imm.NewProc("ImmSetCandidateWindow")
 var associateContext = imm.NewProc("ImmAssociateContext")
+
+var errSupersededTextFrame = errors.New("windows: text frame superseded during native cancellation")
 
 // candidateForm is CANDIDATEFORM.
 type candidateForm struct {
@@ -375,7 +378,7 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 	revision := state.textRevision
 	next, err := state.textInput.OnEvent(event)
 	if err == nil && state.textRevision != revision {
-		return platform.Frame{}, false, nil
+		return platform.Frame{}, true, nil
 	}
 	if err == nil {
 		err = validateTextState(next)
@@ -391,9 +394,7 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 		state.imeEpoch++
 		state.imeComposing, state.imeHasTarget = false, false
 	}
-	if state.textState != next {
-		state.textRevision++
-	}
+	state.textRevision++
 	state.textState = next
 	state.textInput.State = next
 	if cancelNative {
@@ -412,7 +413,9 @@ func (state *windowState) textEventFrame(event platform.TextEvent) (platform.Fra
 	if state.config.OnRedraw != nil {
 		frame, err := state.config.OnRedraw()
 		if err == nil && state.textRevision != revision {
-			return platform.Frame{}, false, nil
+			// A nested no-op may have acknowledged state without submitting a
+			// frame. Refresh the latest native mirror, without replaying old input.
+			return platform.Frame{}, true, nil
 		}
 		return frame, true, err
 	}
@@ -576,7 +579,7 @@ func (state *windowState) prepareFrameWithCancel(frame platform.Frame, nativeVis
 		return platform.Frame{}, false, err
 	}
 	if frame.TextInput.Changed && !inputChanged {
-		return platform.Frame{}, false, nil
+		return platform.Frame{}, false, errSupersededTextFrame
 	}
 	state.baseRectangleCount = len(baseRectangles)
 	state.baseTextLabelCount = len(baseLabels)

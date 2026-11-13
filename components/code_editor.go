@@ -24,6 +24,38 @@ type CodeEditorMarkLayer struct {
 	Color gfx.Color
 }
 
+// CodeEditorChangeKind is one of the four change-history editions the original
+// editor distinguishes in its change margin.
+type CodeEditorChangeKind uint8
+
+const (
+	// ChangeNone is the zero value: the line carries no change-history state.
+	ChangeNone CodeEditorChangeKind = iota
+	// ChangeReverted is a line whose change was reverted to the loaded text.
+	ChangeReverted
+	// ChangeSaved is a changed line whose change was written to disk.
+	ChangeSaved
+	// ChangeModified is a changed line with unsaved changes.
+	ChangeModified
+	// ChangeRevertedModified is a line reverted to a previously modified state.
+	ChangeRevertedModified
+)
+
+// CodeEditorChangeLine decorates one zero-based logical line in the change
+// margin. It is purely visual: it is not hit-tested and does not change the
+// caret, hit-to-byte mapping or any document state. Entries must be sorted by
+// Line and unique; a wrapped line paints its bar once, on its first row.
+//
+// DeletedAbove and DeletedBelow draw a deletion point at the top or bottom of the
+// line's bar: a deletion at the start of the line, and one at the end of the
+// previous visible line (including the empty final line), respectively.
+type CodeEditorChangeLine struct {
+	Line         int
+	Kind         CodeEditorChangeKind
+	DeletedAbove bool
+	DeletedBelow bool
+}
+
 // CodeEditorCaret paints a secondary caret at a byte offset, optionally beyond a line end.
 type CodeEditorCaret struct {
 	Offset       int
@@ -76,6 +108,7 @@ const CodeEditorMaxHighlightedLine = 10_000
 // LineNumberPadding is the padding on each side of the line number's digits.
 type CodeEditorGutter struct {
 	Inset             float32
+	Change            float32
 	Marker            float32
 	Bookmark          float32
 	LineNumberPadding float32
@@ -141,6 +174,15 @@ type CodeEditorSnapshot struct {
 	Wrap bool
 	// LineNumbers shows the number of each line in a gutter on the left.
 	LineNumbers bool
+	// ChangeLines carry the change-history state of logical lines in a dedicated
+	// lane left of every other gutter lane. The caller owns the slice and keeps it
+	// sorted while Paint runs; colors come from ChangeColors and
+	// ChangeDeletionColor.
+	ChangeLines []CodeEditorChangeLine
+	// ChangeColors holds the bar color for each kind, indexed by kind-1.
+	ChangeColors [4]gfx.Color
+	// ChangeDeletionColor paints deletion points.
+	ChangeDeletionColor gfx.Color
 	// MarkerGutter reserves the marker lane even when no markers are present.
 	MarkerGutter bool
 	// GutterMarkers paint in a lane before the line numbers, or on their own.
@@ -330,6 +372,10 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 	// The automatic gutter sizes its lanes from the text metrics; a caller's
 	// CodeEditorGutter replaces those formulas lane by lane.
 	inset := theme.Metrics.TextInsetX()
+	changeLane := float32(0)
+	if len(snapshot.ChangeLines) > 0 {
+		changeLane = max(3, min(cellWidth*0.4, 8))
+	}
 	markerLane := float32(0)
 	if snapshot.MarkerGutter || len(snapshot.GutterMarkers) > 0 {
 		markerLane = lineHeight*0.4 + cellWidth
@@ -344,6 +390,10 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 	if custom := snapshot.Gutter; custom != nil {
 		inset = max(custom.Inset, 0)
 		markerLane = max(custom.Marker, 0)
+		changeLane = max(custom.Change, 0)
+		if changeLane == 0 && len(snapshot.ChangeLines) > 0 {
+			changeLane = max(3, min(cellWidth*0.4, 8))
+		}
 		if markerLane == 0 && len(snapshot.GutterMarkers) > 0 {
 			// Markers must stay somewhere: a zero width omits an empty lane, not
 			// one that has content to place.
@@ -372,16 +422,18 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 			numberLane = float32(max(decimalDigits(lines), 2)+2) * cellWidth
 		}
 	}
-	gutter := foldLane + markerLane + bookmarkLane + numberLane
+	gutter := changeLane + foldLane + markerLane + bookmarkLane + numberLane
 	laneStart := bounds.X + inset
-	foldX, markerX, bookmarkX, numberX := laneStart, float32(0), float32(0), float32(0)
+	changeX := laneStart
+	lanes := laneStart + changeLane
+	foldX, markerX, bookmarkX, numberX := lanes, float32(0), float32(0), float32(0)
 	if foldLast {
-		markerX = laneStart
+		markerX = lanes
 		bookmarkX = markerX + markerLane
 		numberX = bookmarkX + bookmarkLane
 		foldX = numberX + numberLane
 	} else {
-		markerX = laneStart + foldLane
+		markerX = lanes + foldLane
 		bookmarkX = markerX + markerLane
 		numberX = bookmarkX + bookmarkLane
 	}
@@ -496,6 +548,11 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 	if snapshot.CurrentLine && selectionStart == selectionEnd && len(selectionRanges) == 0 && !placeholder {
 		currentLine = int(editor.rows[caretRow].line)
 	}
+	changeIndex := 0
+	if changeLane > 0 && firstRow < len(editor.rows) {
+		changeFirst := int(editor.rows[firstRow].line)
+		changeIndex = sort.Search(len(snapshot.ChangeLines), func(i int) bool { return snapshot.ChangeLines[i].Line >= changeFirst })
+	}
 	markerIndex := 0
 	if markerLane > 0 && firstRow < len(editor.rows) {
 		firstLine := int(editor.rows[firstRow].line)
@@ -511,6 +568,34 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 			tint := theme.Foreground
 			tint.Alpha *= 0.05
 			canvas.Fill(gfx.Rect{X: inner.X, Y: y, Width: inner.Width, Height: lineHeight}, tint)
+		}
+		if changeLane > 0 && editor.firstOfLine(index) {
+			for changeIndex < len(snapshot.ChangeLines) && snapshot.ChangeLines[changeIndex].Line < int(row.line) {
+				changeIndex++
+			}
+			if changeIndex < len(snapshot.ChangeLines) && snapshot.ChangeLines[changeIndex].Line == int(row.line) {
+				entry := snapshot.ChangeLines[changeIndex]
+				changeIndex++
+				if entry.Kind != ChangeNone {
+					color := snapshot.ChangeColors[entry.Kind-1]
+					if snapshot.Disabled {
+						color.Alpha *= 0.5
+					}
+					canvas.Fill(gfx.Rect{X: changeX + 1, Y: y, Width: changeLane - 2, Height: lineHeight}, color)
+				}
+				pointColor := snapshot.ChangeDeletionColor
+				if snapshot.Disabled {
+					pointColor.Alpha *= 0.5
+				}
+				point := max(2, min(changeLane-2, lineHeight*0.3))
+				pointX := changeX + (changeLane-point)/2
+				if entry.DeletedAbove {
+					canvas.Fill(gfx.Rect{X: pointX, Y: y, Width: point, Height: point}, pointColor)
+				}
+				if entry.DeletedBelow {
+					canvas.Fill(gfx.Rect{X: pointX, Y: y + lineHeight - point, Width: point, Height: point}, pointColor)
+				}
+			}
 		}
 		if markerLane > 0 && editor.firstOfLine(index) {
 			for markerIndex < len(snapshot.GutterMarkers) && snapshot.GutterMarkers[markerIndex].Line < int(row.line) {

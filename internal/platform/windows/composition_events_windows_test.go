@@ -325,6 +325,78 @@ func TestCompositionMessageDoesNotOverwriteAReentrantUpdate(t *testing.T) {
 	}
 }
 
+func TestCompositionMessageDoesNotInstallAReentrantEventStaleAck(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, events := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	apply := state.textInput.OnEvent
+	reentered := false
+	state.textInput.OnEvent = func(event platform.TextEvent) (platform.TextState, error) {
+		ack, err := apply(event)
+		if !reentered && event.CompositionPhase == text.CompositionResult {
+			reentered = true
+			state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "z"})
+		}
+		return ack, err
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+	if state.err != nil || len(*events) != 3 || editor.String() != "arz" || state.textState != platform.EditorState(editor) {
+		t.Fatalf("stale event acknowledgment: text=%q state=%+v events=%+v err=%v", editor.String(), state.textState, *events, state.err)
+	}
+}
+
+func TestCompositionMessageDoesNotInstallAReentrantRedrawStaleFrame(t *testing.T) {
+	editor := text.NewEditor("a")
+	if !editor.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, events := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	reentered := false
+	state.config.OnRedraw = func() (platform.Frame, error) {
+		stale := state.textInput
+		if !reentered {
+			reentered = true
+			state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "z"})
+		}
+		return platform.Frame{TextInput: platform.TextInputUpdate{Changed: true, Input: &stale}}, nil
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+	if state.err != nil || len(*events) != 3 || editor.String() != "arz" || state.textState != platform.EditorState(editor) {
+		t.Fatalf("stale redraw acknowledgment: text=%q state=%+v events=%+v err=%v", editor.String(), state.textState, *events, state.err)
+	}
+}
+
+func TestCompositionMessageDoesNotContinueAfterAckChangesOwner(t *testing.T) {
+	editor, other := text.NewEditor("a"), text.NewEditor("other")
+	if !editor.EnableTentativeComposition() || !other.EnableTentativeComposition() {
+		t.Fatal("could not enable fixture capability")
+	}
+	editor.MoveTo(1, false)
+	state, events := compositionMessageWindow(t, editor)
+	state.applyIMEComposition(imeCompositionMessage{hasPreedit: true, preedit: "x"})
+	foreign := 0
+	apply := state.textInput.OnEvent
+	state.textInput.OnEvent = func(event platform.TextEvent) (platform.TextState, error) {
+		_, err := apply(event)
+		state.textInput.OnEvent = func(event platform.TextEvent) (platform.TextState, error) {
+			foreign++
+			event.Apply(other)
+			return platform.EditorState(other), nil
+		}
+		return platform.EditorState(other), err
+	}
+	state.applyIMEComposition(imeCompositionMessage{hasResult: true, result: "r", hasPreedit: true, preedit: "y"})
+	if state.err != nil || len(*events) != 2 || foreign != 0 || editor.String() != "ar" || other.String() != "other" || state.textState != platform.EditorState(other) {
+		t.Fatalf("message entered an acknowledgment owner: old=%q new=%q foreign=%d state=%+v err=%v", editor.String(), other.String(), foreign, state.textState, state.err)
+	}
+}
+
 func TestCompositionFailedResultReadStillAllowsEndCancellation(t *testing.T) {
 	for _, failure := range []string{"negative length", "odd length", "negative write", "odd write", "oversized write"} {
 		t.Run(failure, func(t *testing.T) {

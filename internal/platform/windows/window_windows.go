@@ -608,7 +608,11 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 		if state.textEnabled && state.imeComposing {
 			state.imeComposing = false
 			state.imeHasTarget = false
-			state.handleTextEvent(platform.TextEvent{Kind: platform.TextUnmark})
+			event := platform.TextEvent{Kind: platform.TextUnmark}
+			if state.textState.TentativeComposition {
+				event.CompositionPhase = text.CompositionCancel
+			}
+			state.handleTextEvent(event)
 			return 0
 		}
 	case wmDeadChar:

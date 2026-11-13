@@ -672,6 +672,13 @@ func (state *windowState) setCaretVisible(visible bool) {
 	invalidateRect.Call(state.window, 0, 0)
 }
 
+type imeCompositionMessage struct {
+	result, preedit       string
+	hasResult, hasPreedit bool
+	selection, target     text.Range
+	hasTarget             bool
+}
+
 func (state *windowState) handleComposition(flags uintptr) {
 	// An input method that has no context to give, or a composition string it
 	// cannot report, loses that one composition. Closing the window over it would
@@ -681,38 +688,47 @@ func (state *windowState) handleComposition(flags uintptr) {
 		return
 	}
 	defer releaseInputContext.Call(state.window, context)
+	message := imeCompositionMessage{}
 	if flags&resultString != 0 {
 		value, err := compositionText(context, resultString)
-		state.imeComposing = false
-		state.imeHasTarget = false
 		if err != nil {
 			return
 		}
-		state.handleTextEvent(platform.TextEvent{Kind: platform.TextInsert, Text: value})
-		return
+		message.result, message.hasResult = value, true
 	}
-	if flags&compositionString == 0 {
-		return
-	}
-	value, err := compositionText(context, compositionString)
-	if err != nil {
-		return
-	}
-	state.imeTarget, state.imeHasTarget = compositionTarget(context, value)
-	cursorUnits := 0
-	if flags&compositionCursor != 0 {
-		position, _, _ := getCompositionString.Call(context, compositionCursor, 0, 0)
-		cursorUnits = int(int32(position))
-		if cursorUnits < 0 {
-			cursorUnits = 0
+	// Read the entire native message before an application callback can replace
+	// the input or reset its IMM context while processing the result.
+	if flags&compositionString != 0 {
+		value, err := compositionText(context, compositionString)
+		if err == nil {
+			message.preedit, message.hasPreedit = value, true
+			message.target, message.hasTarget = compositionTarget(context, value)
+			cursorUnits := 0
+			if flags&compositionCursor != 0 {
+				position, _, _ := getCompositionString.Call(context, compositionCursor, 0, 0)
+				cursorUnits = max(0, int(int32(position)))
+			}
+			cursorRunes := text.NewEditor(value).UTF16ToRuneIndex(cursorUnits)
+			message.selection = text.Range{Start: cursorRunes, End: cursorRunes}
 		}
 	}
-	cursorRunes := text.NewEditor(value).UTF16ToRuneIndex(cursorUnits)
-	state.imeComposing = true
-	state.handleTextEvent(platform.TextEvent{
-		Kind: platform.TextSetMarked, Text: value,
-		MarkedSelection: text.Range{Start: cursorRunes, End: cursorRunes},
-	})
+	state.applyIMEComposition(message)
+}
+
+func (state *windowState) applyIMEComposition(message imeCompositionMessage) {
+	if message.hasResult {
+		state.imeComposing, state.imeHasTarget = false, false
+		state.handleTextEvent(platform.TextEvent{Kind: platform.TextInsert, Text: message.result})
+		return
+	}
+	if message.hasPreedit {
+		state.imeComposing = true
+		state.imeTarget, state.imeHasTarget = message.target, message.hasTarget
+		state.handleTextEvent(platform.TextEvent{
+			Kind: platform.TextSetMarked, Text: message.preedit,
+			MarkedSelection: message.selection,
+		})
+	}
 }
 
 func (state *windowState) positionCompositionWindow() {

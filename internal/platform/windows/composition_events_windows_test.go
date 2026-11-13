@@ -28,7 +28,7 @@ func TestCompositionIMEEndPreservesOptInAndLegacyBoundaries(t *testing.T) {
 			if editor.String() != "axc" {
 				t.Fatal("fixture did not begin selected preedit")
 			}
-			state := &windowState{textEnabled: true, imeComposing: true, textState: platform.EditorState(editor)}
+			state := &windowState{ready: true, textEnabled: true, imeComposing: true, textState: platform.EditorState(editor)}
 			var events []platform.TextEvent
 			stop := errors.New("stop before renderer submission")
 			state.textInput.OnEvent = func(event platform.TextEvent) (platform.TextState, error) {

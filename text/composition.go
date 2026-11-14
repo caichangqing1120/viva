@@ -1,6 +1,7 @@
 package text
 
 import (
+	"sync/atomic"
 	"unicode/utf8"
 	"unsafe"
 )
@@ -37,14 +38,23 @@ type CompositionEvent struct {
 	HasReplacementUTF16 bool
 }
 
+// CompositionIdentity is a comparable, opaque identity for one enabled
+// composition capability. Its zero value denotes an unowned snapshot.
+type CompositionIdentity struct {
+	source uint64
+}
+
+var compositionIdentities atomic.Uint64
+
 // compositionState is the optional sidecar. It owns the physical tentative
 // boundary, the one pending producer frame and the bounded retention
 // descriptor; it never copies source text.
 type compositionState struct {
-	owner *Editor
-	ops   compositionOps
-	event *historyEvent
-	cost  int
+	owner    *Editor
+	identity CompositionIdentity
+	ops      compositionOps
+	event    *historyEvent
+	cost     int
 	// unitStart is the rollback boundary: the first tentative unit after any
 	// ordinary pre-start deletion. eventStart is the atomic delivery boundary:
 	// it also includes that ordinary deletion. They are deliberately distinct.
@@ -117,6 +127,7 @@ func (editor *Editor) EnableTentativeComposition() (ok bool) {
 	editor.journal = journal
 	journal.composition = &compositionState{
 		owner:      editor,
+		identity:   CompositionIdentity{source: compositionIdentities.Add(1)},
 		ops:        compositionOps{apply: applyCompositionOwned, committed: compositionCommittedText, settle: settleCompositionStorage, trimCost: compositionTrimCostOwned},
 		cost:       cost,
 		unitStart:  -1,
@@ -183,6 +194,16 @@ func (editor *Editor) TentativeCompositionEnabled() bool {
 	}
 	state := editor.journal.composition
 	return state != nil && state.enabled
+}
+
+// TentativeCompositionIdentity snapshots capability ownership without enabling
+// a journal, retaining the Editor or allocating. Disabled snapshots are zero.
+func (editor *Editor) TentativeCompositionIdentity() CompositionIdentity {
+	state := editor.compositionState()
+	if state != nil && state.enabled && state.owner == editor {
+		return state.identity
+	}
+	return CompositionIdentity{}
 }
 
 // ApplyComposition handles one explicit event. True includes valid no-ops;

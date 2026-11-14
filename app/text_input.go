@@ -37,6 +37,8 @@ type TextState struct {
 	// uses it when typed text appears ahead of the server's echo; ordinary
 	// terminal input leaves it false and costs no frame.
 	Redraw bool
+	// Numeric ownership keeps Editor/history references out of value snapshots.
+	compositionIdentity text.CompositionIdentity
 }
 
 // TextEventKind identifies one native text-system mutation.
@@ -252,6 +254,24 @@ func TextStateOf(editor *text.Editor) TextState {
 		Composition:          appTextRange(composition),
 		Composing:            composing,
 		TentativeComposition: editor.TentativeCompositionEnabled(),
+		compositionIdentity:  editor.TentativeCompositionIdentity(),
+	}
+}
+
+func platformTextState(state TextState) platform.TextState {
+	identity := state.compositionIdentity
+	if !state.TentativeComposition {
+		identity = text.CompositionIdentity{}
+	}
+	return platform.TextState{
+		Value:                state.Value,
+		Selection:            platformTextRange(state.Selection),
+		SelectionReversed:    state.SelectionReversed,
+		Composition:          platformTextRange(state.Composition),
+		Composing:            state.Composing,
+		TentativeComposition: state.TentativeComposition,
+		Redraw:               state.Redraw,
+		CompositionIdentity:  identity,
 	}
 }
 

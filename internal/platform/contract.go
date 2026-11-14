@@ -948,6 +948,9 @@ type TextState struct {
 	// terminal drawing typed text ahead of the server's echo. It is not part of
 	// the mirrored editor state and is cleared again before the next event.
 	Redraw bool
+	// CompositionIdentity is derived by EditorState and used only to compare
+	// ownership. It does not retain an editor or route events to one.
+	CompositionIdentity text.CompositionIdentity
 }
 
 // TextInputPresentationChanged reports whether applying a native text event
@@ -1211,6 +1214,7 @@ func EditorState(editor *text.Editor) TextState {
 		Composition:          composition,
 		Composing:            composing,
 		TentativeComposition: editor.TentativeCompositionEnabled(),
+		CompositionIdentity:  editor.TentativeCompositionIdentity(),
 	}
 }
 

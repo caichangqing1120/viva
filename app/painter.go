@@ -40,6 +40,7 @@ type painter struct {
 	textInput   TextInputProvider
 	activeText  *TextInput
 	onTextEvent platform.TextHandler
+	textEpoch   uint64
 	// placing is a press on a text field that lays its rows out itself being held
 	// (see placeCaret), from the rune index placeAnchor.
 	placing     bool
@@ -1208,6 +1209,7 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 		if !painter.textEnabled {
 			return platform.TextInputUpdate{}
 		}
+		painter.textEpoch++
 		painter.textEnabled = false
 		return platform.TextInputUpdate{Changed: true}
 	}
@@ -1246,6 +1248,7 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 		if !painter.textEnabled {
 			return platform.TextInputUpdate{}
 		}
+		painter.textEpoch++
 		painter.textEnabled = false
 		return platform.TextInputUpdate{Changed: true}
 	}
@@ -1277,14 +1280,7 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 			Red: float64(tint.Red), Green: float64(tint.Green),
 			Blue: float64(tint.Blue), Alpha: float64(tint.Alpha),
 		},
-		State: platform.TextState{
-			Value:                input.State.Value,
-			Selection:            platformTextRange(input.State.Selection),
-			SelectionReversed:    input.State.SelectionReversed,
-			Composition:          platformTextRange(input.State.Composition),
-			Composing:            input.State.Composing,
-			TentativeComposition: input.State.TentativeComposition,
-		},
+		State:   platformTextState(input.State).WithoutRedraw(),
 		OnEvent: painter.onTextEvent,
 	}
 	if placement != nil {
@@ -1300,6 +1296,12 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 	if painter.textEnabled && samePlatformTextInput(painter.nativeText, native) {
 		return platform.TextInputUpdate{}
 	}
+	if !painter.textEnabled || previousEditor != nextEditor || painter.nativeText.Target != native.Target ||
+		painter.nativeText.Multiline != native.Multiline || painter.nativeText.Secure != native.Secure ||
+		painter.nativeText.Terminal != native.Terminal || painter.nativeText.Placed != native.Placed ||
+		painter.nativeText.DisableIME != native.DisableIME || painter.nativeText.State != native.State {
+		painter.textEpoch++
+	}
 	painter.nativeText = native
 	painter.textEnabled = true
 	return platform.TextInputUpdate{Changed: true, Input: &painter.nativeText}
@@ -1311,6 +1313,7 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 	if active == nil || active.Editor == nil && active.OnEvent == nil {
 		return platform.TextState{}, fmt.Errorf("app: native text event without an active handler")
 	}
+	epoch := painter.textEpoch
 	appEvent := TextEvent{
 		Kind: TextEventKind(event.Kind), Text: event.Text, Rectangular: event.Rectangular,
 		Selection:       appTextRange(event.Selection),
@@ -1349,16 +1352,19 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 			return platform.TextState{}, err
 		}
 	}
-	painter.activeText.State = next
-	native := platform.TextState{
-		Value:                next.Value,
-		Selection:            platformTextRange(next.Selection),
-		SelectionReversed:    next.SelectionReversed,
-		Composition:          platformTextRange(next.Composition),
-		Composing:            next.Composing,
-		TentativeComposition: next.TentativeComposition,
-		Redraw:               next.Redraw,
+	if painter.textEpoch != epoch {
+		// A nested event or provider update has already installed newer state.
+		// Request its presentation even when the nested call had no native frame.
+		if painter.activeText == nil {
+			return platform.TextState{Redraw: true}, nil
+		}
+		native := painter.nativeText.State
+		native.Redraw = true
+		return native, nil
 	}
+	painter.textEpoch++
+	painter.activeText.State = next
+	native := platformTextState(next)
 	// What the platform mirrors back never carries the one-shot request.
 	painter.nativeText.State = native.WithoutRedraw()
 	painter.activeText.State.Redraw = false

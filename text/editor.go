@@ -295,6 +295,7 @@ func (editor *Editor) Paste(value string) {
 // SetMarkedText replaces the current composition or selection with marked
 // text. selected is relative to the marked text, matching native IME APIs.
 func (editor *Editor) SetMarkedText(value string, selected Range) {
+	editor.invalidateHistoryFrom(0)
 	wasComposing := editor.composing
 	if !wasComposing {
 		// The input method composes at the caret: a multi-selection ends here, as
@@ -616,6 +617,9 @@ func (editor *Editor) Undo() bool {
 	editor.replaceHistory(edit, true)
 	editor.restoreSelection(edit.before)
 	editor.BreakUndoGroup()
+	if history := editor.historyState(); history != nil {
+		history.ops.replay(history, editor.historyIndex, true)
+	}
 	return true
 }
 
@@ -629,6 +633,9 @@ func (editor *Editor) Redo() bool {
 	editor.restoreSelection(edit.after)
 	editor.historyIndex++
 	editor.BreakUndoGroup()
+	if history := editor.historyState(); history != nil {
+		history.ops.replay(history, editor.historyIndex-1, false)
+	}
 	return true
 }
 
@@ -637,7 +644,10 @@ func (editor *Editor) Redo() bool {
 // automatically; applications may call it at another semantic boundary.
 func (editor *Editor) BreakUndoGroup() { editor.coalescing = 0 }
 
-func (editor *Editor) clearHistory() {
+func (editor *Editor) clearHistory(manual bool) {
+	if history := editor.historyState(); history != nil {
+		history.ops.clear(history, manual && !editor.composing)
+	}
 	if editor.journal != nil && editor.journal.lines != nil {
 		editor.journal.lines.batches = nil
 		editor.journal.lines.delivery = nil
@@ -654,8 +664,10 @@ func (editor *Editor) clearHistory() {
 // ClearHistory forgets every undo and redo unit without changing the text. It
 // also forgets the history a cancel could restore, so a composition active
 // while it is called cannot bring back cleared units.
+// A proven complete-history producer starts a new generation; an unavailable
+// producer stays unavailable. Use ClearChangeHistory to preserve unsaved truth.
 func (editor *Editor) ClearHistory() {
-	editor.clearHistory()
+	editor.clearHistory(true)
 	editor.compositionHistoryIndex = 0
 	editor.compositionHistoryRunes = 0
 	editor.compositionCoalescing = 0
@@ -693,18 +705,28 @@ func (editor *Editor) restoreSelection(selection editorSelection) {
 }
 
 func (editor *Editor) record(change textChange, before, after editorSelection, kind editKind) {
-	if runesEqual(change.removed, change.inserted) && (len(change.removed) == 0 || editor.savePointIndex() == nil) {
+	if runesEqual(change.removed, change.inserted) && (len(change.removed) == 0 || !editor.retainEqualEdits()) {
 		return
 	}
 	editor.dropRedo()
-	if editor.merge(change, before, after, kind) {
+	var primitive Edit
+	owned := false
+	if history := editor.historyState(); history != nil {
+		primitive, owned = history.ops.record(history, change, kind)
+	}
+	owned = owned && kind != editSeparate
+	if editor.merge(change, before, after, kind, primitive, owned) {
 		editor.trimHistory()
 		return
 	}
-	editor.appendHistory(historyEdit{
+	edit := historyEdit{
 		start: change.start, removed: change.removed, inserted: change.inserted,
 		before: before, after: after, kind: kind,
-	})
+	}
+	if owned {
+		edit.primitives = []Edit{primitive}
+	}
+	editor.appendHistory(edit)
 }
 
 func (editor *Editor) recordWithPrimitives(change textChange, before, after editorSelection, kind editKind, primitives []Edit) {
@@ -712,10 +734,13 @@ func (editor *Editor) recordWithPrimitives(change textChange, before, after edit
 		editor.record(change, before, after, kind)
 		return
 	}
-	if runesEqual(change.removed, change.inserted) && editor.savePointIndex() == nil {
+	if runesEqual(change.removed, change.inserted) && !editor.retainEqualEdits() {
 		return
 	}
 	editor.dropRedo()
+	if history := editor.historyState(); history != nil {
+		history.ops.capturePrimitives(history, primitives)
+	}
 	editor.appendHistory(historyEdit{
 		start: change.start, removed: change.removed, inserted: change.inserted,
 		before: before, after: after, kind: kind,
@@ -726,7 +751,7 @@ func (editor *Editor) recordWithPrimitives(change textChange, before, after edit
 func (editor *Editor) appendHistory(edit historyEdit) {
 	editor.history = append(editor.history, edit)
 	editor.historyIndex = len(editor.history)
-	editor.historyRunes += edit.retainedRunes()
+	editor.historyRunes += editor.historyUnitRunes(&edit)
 	if edit.kind == editSeparate {
 		editor.coalescing = 0
 	} else {
@@ -735,7 +760,7 @@ func (editor *Editor) appendHistory(edit historyEdit) {
 	editor.trimHistory()
 }
 
-func (editor *Editor) merge(change textChange, before, after editorSelection, kind editKind) bool {
+func (editor *Editor) merge(change textChange, before, after editorSelection, kind editKind, primitive Edit, owned bool) bool {
 	if editor.coalescing != kind || editor.historyIndex == 0 || editor.historyIndex != len(editor.history) {
 		return false
 	}
@@ -778,6 +803,11 @@ func (editor *Editor) merge(change textChange, before, after editorSelection, ki
 	default:
 		return false
 	}
+	if owned {
+		capacity := cap(previous.primitives)
+		previous.primitives = append(previous.primitives, primitive)
+		editor.historyRunes += (cap(previous.primitives) - capacity) * historyPrimitiveRunes
+	}
 	previous.after = after
 	return true
 }
@@ -793,23 +823,26 @@ func (editor *Editor) discardRedo() {
 		*point = -1
 	}
 	for index := editor.historyIndex; index < len(editor.history); index++ {
-		editor.historyRunes -= editor.history[index].retainedRunes() + editor.forgetLineBatch(&editor.history[index])
+		editor.historyRunes -= editor.historyUnitRunes(&editor.history[index]) + editor.forgetLineBatch(&editor.history[index])
 	}
 	clear(editor.history[editor.historyIndex:])
 	editor.history = editor.history[:editor.historyIndex]
 }
 
 func (editor *Editor) trimHistory() {
+	if history := editor.historyState(); history != nil {
+		history.ops.enforce(history)
+	}
 	// The newest unit is always kept, unless it alone is beyond what is worth
 	// keeping.
 	remove := 0
-	for len(editor.history)-remove > 1 && (len(editor.history)-remove > maxHistoryEntries || editor.historyRunes > maxHistoryRunes) {
+	for len(editor.history)-remove > 1 && (len(editor.history)-remove > maxHistoryEntries || editor.historyCost() > maxHistoryRunes) {
 		edit := editor.history[remove]
-		editor.historyRunes -= edit.retainedRunes() + editor.forgetLineBatch(&editor.history[remove])
+		editor.historyRunes -= editor.historyUnitRunes(&edit) + editor.forgetLineBatch(&editor.history[remove])
 		remove++
 	}
-	if len(editor.history)-remove == 1 && editor.historyRunes > maxSingleEditRunes {
-		editor.clearHistory()
+	if len(editor.history)-remove == 1 && editor.historyCost() > maxSingleEditRunes {
+		editor.clearHistory(false)
 		if point := editor.savePointIndex(); point != nil {
 			*point = -1
 		}
@@ -818,6 +851,7 @@ func (editor *Editor) trimHistory() {
 	if remove == 0 {
 		return
 	}
+	editor.invalidateHistoryFrom(remove)
 	if point := editor.savePointIndex(); point != nil && *point >= 0 {
 		*point -= remove
 		if *point < 0 {

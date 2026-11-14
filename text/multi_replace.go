@@ -22,8 +22,8 @@ type ReplaceRangesOptions struct {
 	// retained by Undo/Redo. Nil keeps the default caret after the last target.
 	AfterSelection *Range
 	// ApplyUnchanged reports target primitives even when final text is equal.
-	// Without save-point mode equal text adds no Undo unit and preserves Redo.
-	// SetSavePoint opts into retaining those actual replacements in history.
+	// Without save-point or complete-history tracking, equal text adds no Undo
+	// unit and preserves Redo. Those modes retain actual nonempty replacements.
 	ApplyUnchanged bool
 }
 
@@ -71,7 +71,8 @@ func (editor *Editor) ValidateReplaceRanges(edits []Replacement, options Replace
 
 // ReplaceRangesWith validates and applies a batch with optional primitive order
 // and final selection. An empty batch is a no-op. Unchanged text is also a no-op
-// unless ApplyUnchanged or save-point mode is enabled; otherwise final selection is unchanged.
+// unless ApplyUnchanged, save-point or complete-history mode is enabled;
+// otherwise final selection is unchanged.
 func (editor *Editor) ReplaceRangesWith(edits []Replacement, options ReplaceRangesOptions) error {
 	if err := editor.ValidateReplaceRanges(edits, options); err != nil {
 		return err
@@ -136,7 +137,7 @@ func (editor *Editor) ReplaceRangesWith(edits []Replacement, options ReplaceRang
 		position = edit.Range.End
 	}
 	changed := !slices.Equal(replacement, editor.runes[start:end])
-	if !changed && !options.ApplyUnchanged && editor.savePointIndex() == nil {
+	if !changed && !options.ApplyUnchanged && (len(primitives) == 0 || !editor.retainEqualEdits()) {
 		return nil
 	}
 	if options.Forward {
@@ -155,6 +156,20 @@ func (editor *Editor) ReplaceRangesWith(edits []Replacement, options ReplaceRang
 
 func (editor *Editor) commitBatch(target Range, replacement string, primitives []Edit, contexts []lineContext, after *Range) {
 	target = normalizeRange(target, len(editor.runes))
+	// Empty targets do not become primitives. Retain only the accepted backing
+	// in producer mode, including the line contexts keyed by that same slice.
+	if editor.historyState() != nil {
+		if cap(primitives) > len(primitives) {
+			retained := make([]Edit, len(primitives))
+			copy(retained, primitives)
+			primitives = retained
+		}
+		if cap(contexts) > len(contexts) {
+			retained := make([]lineContext, len(contexts))
+			copy(retained, contexts)
+			contexts = retained
+		}
+	}
 	// A batch leaves the one selection it names; the multi-selection paths
 	// reinstall their set after the call.
 	editor.clearSecondary()

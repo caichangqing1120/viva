@@ -157,6 +157,60 @@ func TestNewContextAsksForPreeditFocusAndSurroundingTextCapabilities(t *testing.
 	}
 }
 
+func TestContextCloseUsesTheNativeServiceAndIsIdempotent(t *testing.T) {
+	_, context, transport := newTestBus(t, Handler{})
+	context.Close()
+	calls := transport.calls("Destroy")
+	if len(calls) != 1 || calls[0].path != testContext || calls[0].iface != "org.freedesktop.IBus.Service" {
+		t.Fatalf("native destruction=%+v", calls)
+	}
+	context.Close()
+	if len(transport.calls("Destroy")) != 1 {
+		t.Fatal("closing the same context twice sent a second native destruction")
+	}
+}
+
+func TestClosingAReplacedContextKeepsTheSuccessorsHandler(t *testing.T) {
+	bus, previous, transport := newTestBus(t, Handler{})
+	var observed string
+	next, err := bus.NewContext("successor", Handler{Commit: func(value string) { observed = value }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous.Close()
+	transport.incoming = []*dbus.Message{commitSignal(testContext, "successor")}
+	if err := bus.Dispatch(); err != nil {
+		t.Fatal(err)
+	}
+	if observed != "successor" || len(transport.calls("Destroy")) != 0 {
+		t.Fatalf("retired owner destroyed successor: commit=%q calls=%+v", observed, transport.calls("Destroy"))
+	}
+	next.Close()
+	if len(transport.calls("Destroy")) != 1 {
+		t.Fatal("successor was not destroyed by its current owner")
+	}
+}
+
+func TestRetiredContextsRefuseKeysAndContextSideEffects(t *testing.T) {
+	bus, context, transport := newTestBus(t, Handler{})
+	context.Close()
+	sent := len(transport.sent)
+	if err := context.ProcessKey('n', 49, 0, nil); !errors.Is(err, ErrClosed) {
+		t.Fatalf("retired key=%v", err)
+	}
+	for _, err := range []error{
+		context.FocusIn(), context.FocusOut(), context.Reset(),
+		context.SetCursorLocation(0, 0, 1, 10), context.SetSurroundingText("", 0, 0),
+	} {
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("retired context side effect=%v", err)
+		}
+	}
+	if len(transport.sent) != sent || len(bus.pending) != 0 {
+		t.Fatal("retired context sent native requests or retained a pending key")
+	}
+}
+
 func TestEngineSelectionUsesItsContextConnectionAndSurfacesRefusal(t *testing.T) {
 	for _, refused := range []bool{false, true} {
 		bus, context, transport := newTestBus(t, Handler{})

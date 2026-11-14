@@ -235,3 +235,44 @@ func TestNativeClientPreeditMode(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeContextRetirement(t *testing.T) {
+	if os.Getenv("VIVA_IBUS_NATIVE") != "1" {
+		t.Skip("native context retirement requires a private input-method service")
+	}
+	bus, err := Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	context, err := bus.NewContext("viva-retirement", Handler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer context.Close()
+	if err := context.FocusIn(); err != nil {
+		t.Fatal(err)
+	}
+	engine := os.Getenv("VIVA_IBUS_ENGINE")
+	if engine == "" {
+		engine = "libpinyin"
+	}
+	if err := context.SetEngine(engine); err != nil {
+		t.Fatal(err)
+	}
+	query := func() error {
+		_, err := bus.conn.Call(service, context.path, contextInterface, "GetEngine", "", nil)
+		return err
+	}
+	if err := query(); err != nil {
+		t.Fatalf("new native context is not callable: %v", err)
+	}
+	context.Close()
+	var refused *dbus.Error
+	if err := query(); !errors.As(err, &refused) {
+		t.Fatalf("closed native context still callable: %v", err)
+	}
+	if _, err := bus.NewContext("viva-successor", Handler{}); err != nil {
+		t.Fatalf("native destruction damaged the shared bus: %v", err)
+	}
+}

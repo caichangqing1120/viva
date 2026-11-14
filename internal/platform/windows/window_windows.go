@@ -140,7 +140,11 @@ type windowState struct {
 	imeTarget                    text.Range
 	imeHasTarget                 bool
 	titlebarThemed, titlebarDark bool
-	web                          *webHost
+	// borderColored says the window's border was given an application color,
+	// and borderColor is that color; see applyBorderColor.
+	borderColored bool
+	borderColor   uint32
+	web           *webHost
 }
 
 var active atomic.Pointer[windowState]
@@ -381,6 +385,7 @@ func (application *windowsApplication) OpenWindow(config platform.Config) (platf
 	}
 	state.watchBackdropPower()
 	state.applyBackdrop()
+	state.applyBorderColor()
 	state.ready = true
 	if state.activeBackdrop() {
 		postMessage.Call(state.window, wmRedraw, 0, 0)
@@ -944,6 +949,7 @@ func (state *windowState) frameWithText(frame platform.Frame, err error, nativeV
 	views := frame.NativeViews
 	if err == nil {
 		state.applyBackdrop()
+		state.applyBorderColor()
 		defer func() {
 			if state.web != nil && state.ready {
 				state.web.frame(views)

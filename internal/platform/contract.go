@@ -47,6 +47,15 @@ type Config struct {
 	TitlebarHeight    float32
 	TrafficLightScale float32
 	ClearColor        Color
+	// WindowBorderColor, when set, is read on the window thread with every
+	// frame and names the color of the border the desktop draws around a
+	// custom-titlebar window. Windows 11 composites that border against what
+	// is behind the window rather than against the window's own pixels, so
+	// the background shows through it; a color that matches the window's own
+	// edge makes the border continuous instead. Nil, or a color that is not
+	// opaque, leaves the system's border. Adapters without such a border
+	// ignore it.
+	WindowBorderColor func() Color
 	WindowMaterials
 	Rectangles    []render.Rectangle
 	TextLabels    []TextLabel

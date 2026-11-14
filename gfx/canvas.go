@@ -816,7 +816,7 @@ func (canvas *Canvas) CellSize(size float32) (width, height float32) {
 // glyph that fills its cell, such as a powerline arrow, ends where the next cell's begins
 // and no pixel column holds the glyphs of two cells drawn in two colors.
 func (canvas *Canvas) MonoCellSize(size float32, face MonoFace) (width, height float32) {
-	width, height, _, _ = canvas.monoCell(size, face)
+	width, height, _, _, _ = canvas.monoCell(size, face)
 	return width, height
 }
 
@@ -828,26 +828,27 @@ func (canvas *Canvas) MonoCellSize(size float32, face MonoFace) (width, height f
 // the face, and for a label of no height: the renderers then place the line by their own
 // rule.
 func (canvas *Canvas) MonoBaseline(size float32, face MonoFace, height float32) float32 {
-	_, cell, baseline, _ := canvas.monoCell(size, face)
+	_, cell, baseline, _, _ := canvas.monoCell(size, face)
 	if cell <= 0 || baseline <= 0 || height <= 0 {
 		return 0
 	}
 	return (height-cell)/2 + baseline
 }
 
-// monoCell is MonoCellSize, the baseline of the cell and the face's underline thickness,
-// measured once per face, size, scale and font generation. The baseline is 0 and the
-// underline the reference thickness when no engine measured the face.
-func (canvas *Canvas) monoCell(size float32, face MonoFace) (width, height, baseline, underline float32) {
+// monoCell is MonoCellSize, the baseline of the cell and the thicknesses of the face's own
+// light and heavy box drawing strokes, measured once per face, size, scale and font
+// generation. The baseline is 0 and the strokes the reference thickness when no engine
+// measured the face.
+func (canvas *Canvas) monoCell(size float32, face MonoFace) (width, height, baseline, rule, heavy float32) {
 	if size <= 0 {
-		return 0, 0, 0, 0
+		return 0, 0, 0, 0, 0
 	}
 	if !validMonoFace(face) {
 		face = MonoSystem
 	}
 	generation := canvas.FontGeneration()
-	if width, height, baseline, underline, ok := canvas.cellSizes.find(size, face, canvas.pixelScale, generation); ok {
-		return width, height, baseline, underline
+	if width, height, baseline, rule, heavy, ok := canvas.cellSizes.find(size, face, canvas.pixelScale, generation); ok {
+		return width, height, baseline, rule, heavy
 	}
 	width, height = size*textmetrics.MonoAdvance, size*textmetrics.MonoLine
 	switch {
@@ -858,31 +859,37 @@ func (canvas *Canvas) monoCell(size float32, face MonoFace) (width, height, base
 	case canvas.monoCells != nil:
 		if cell := canvas.monoCells.MonoCell(size, face); cell.Line() > 0 && cell.Advance > 0 {
 			width, height, baseline = cell.Advance, cell.CellHeight(), cell.CellBaseline()
-			underline = cell.Underline
+			rule, heavy = cell.Rule, cell.HeavyRule
 		}
 	}
-	if underline <= 0 {
-		// No engine measured the face, or its font has no underline: the reference
-		// thickness stands in, in the font's own units so it follows the size.
-		underline = size * textmetrics.MonoUnderline
+	if rule <= 0 {
+		// No engine measured the face, or its font has no box drawing glyph: the
+		// reference thickness stands in, in the font's own units so it follows the size.
+		rule = size * textmetrics.MonoRule
 	}
+	if heavy <= 0 {
+		// A face that draws a heavy line reports both; one that lacks the heavy glyph,
+		// or no engine at all, gets the weight a heavy stroke has against a light one.
+		heavy = rule * 2
+	}
+	heavy = max(heavy, rule)
 	// A font's own cell is whole already (MonoCellMetrics.CellHeight); the reference cell
 	// and a measurer's answer are rounded up, as they always were.
 	height = float32(int32(height + 0.999))
 	if canvas.pixelScale > 0 {
 		width = float32(math.Max(math.Floor(float64(width)*float64(canvas.pixelScale)+0.5), 1)) / canvas.pixelScale
 	}
-	canvas.cellSizes.put(cellSizeMemo{size: size, width: width, height: height, baseline: baseline, underline: underline, face: face, scale: canvas.pixelScale, generation: generation})
-	return width, height, baseline, underline
+	canvas.cellSizes.put(cellSizeMemo{size: size, width: width, height: height, baseline: baseline, rule: rule, heavy: heavy, face: face, scale: canvas.pixelScale, generation: generation})
+	return width, height, baseline, rule, heavy
 }
 
 // cellSizeMemo is one remembered MonoCellSize answer.
 type cellSizeMemo struct {
-	size, width, height, baseline, underline float32
-	face                                     MonoFace
-	scale                                    float32 // the canvas's pixel scale the width was made whole for
-	generation                               uint32  // the font generation it was measured in
-	filled                                   bool
+	size, width, height, baseline, rule, heavy float32
+	face                                       MonoFace
+	scale                                      float32 // the canvas's pixel scale the width was made whole for
+	generation                                 uint32  // the font generation it was measured in
+	filled                                     bool
 }
 
 // cellSizeMemos remembers the last few MonoCellSize answers: a terminal asks every
@@ -894,14 +901,14 @@ type cellSizeMemos struct {
 	next    int
 }
 
-func (memos *cellSizeMemos) find(size float32, face MonoFace, scale float32, generation uint32) (width, height, baseline, underline float32, ok bool) {
+func (memos *cellSizeMemos) find(size float32, face MonoFace, scale float32, generation uint32) (width, height, baseline, rule, heavy float32, ok bool) {
 	for i := range memos.entries {
 		memo := &memos.entries[i]
 		if memo.filled && memo.size == size && memo.face == face && memo.scale == scale && memo.generation == generation {
-			return memo.width, memo.height, memo.baseline, memo.underline, true
+			return memo.width, memo.height, memo.baseline, memo.rule, memo.heavy, true
 		}
 	}
-	return 0, 0, 0, 0, false
+	return 0, 0, 0, 0, 0, false
 }
 
 func (memos *cellSizeMemos) put(memo cellSizeMemo) {
@@ -1502,9 +1509,10 @@ func (canvas *Canvas) TextOffsetAtStyle(value string, style TextStyle, x float32
 
 // LabelRuns appends one fixed-pitch line: value drawn in the system fixed-pitch
 // font with every character on a grid of cellWidth, each run of it in its own
-// color and weight. A terminal row is one such line, however many colors it
-// holds, so the number and order of labels stays stable while its content
-// changes. Bounds is the whole line; its width should be columns*cellWidth.
+// color, weight and slant (TextRun.Italic). A terminal row is one such line,
+// however many colors it holds, so the number and order of labels stays stable
+// while its content changes. Bounds is the whole line; its width should be
+// columns*cellWidth.
 // runs must cover value (see TextRun); the canvas copies them, so the caller
 // may reuse the slice as soon as the call returns.
 func (canvas *Canvas) LabelRuns(value string, bounds Rect, style TextStyle, cellWidth float32, runs []TextRun) {

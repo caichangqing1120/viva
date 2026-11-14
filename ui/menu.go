@@ -109,6 +109,9 @@ func (p *Page) declareMenu(c C, menu *MenuItems, scope gfx.Scope, open *bool, an
 	if menu.paint == nil {
 		menu.paint = menu.draw // made once: a method value made in each paint allocates
 	}
+	if menu.itemPainter == nil {
+		menu.itemPainter, menu.panelPainter = menu.paintItem, menu.paintPanel
+	}
 	f := c.f
 	menu.page, menu.f, menu.open, menu.anchor = p, f, open, anchor
 	menu.scope, menu.root, menu.parent = scope, menu, nil
@@ -150,6 +153,7 @@ func (m *MenuItems) fresh() {
 	if m.seen+1 != m.page.epoch {
 		m.sub, m.subMenu, m.intent = -1, nil, components.HoverIntent{}
 	}
+	m.unpainted, m.drawPanel, m.drawItem = false, nil, nil
 	m.seen = m.page.epoch
 }
 
@@ -283,6 +287,87 @@ type MenuItems struct {
 	seen         uint32 // the page's epoch the menu was last declared in
 	focusSub     bool   // the keyboard opened the submenu: its first row takes the focus
 	focusFirst   bool   // this submenu's first row takes the focus as it paints
+
+	// An unpainted menu declares its behavior and rows but paints none of them:
+	// drawPanel draws the surface and drawItem each row. itemPainter and
+	// panelPainter are their method values, made once.
+	unpainted    bool
+	drawPanel    func(*gfx.Canvas, gfx.Rect, gfx.Theme)
+	drawItem     func(MenuItemParts)
+	panelPainter func(*gfx.Canvas, gfx.Rect, gfx.Theme)
+	itemPainter  func(components.MenuItemPaint)
+}
+
+// MenuItemParts is one row of a menu declared Unpainted. The application paints
+// it, and the menu keeps the row's hit, its focus and keyboard behavior, and its
+// place in a submenu chain. Separator and GroupLabel say the row is not an
+// action; Active is the row the pointer or the keyboard is on; Foreground is the
+// color the menu's own row would give its label.
+type MenuItemParts struct {
+	Canvas      *gfx.Canvas
+	Theme       gfx.Theme
+	Rect        gfx.Rect
+	Label       string
+	Description string
+	Shortcut    string
+	Checked     bool
+	Selected    bool
+	Expanded    bool
+	Disabled    bool
+	Active      bool
+	Destructive bool
+	Separator   bool
+	GroupLabel  bool
+	Foreground  gfx.Color
+}
+
+// Unpainted makes the menu declare its behavior, size and rows but paint none
+// of them: DrawPanel draws the surface and DrawItem each row, inside the menu's
+// layer and clipping. Hits, focus, the keyboard, dismissal and submenu opening
+// stay the menu's, so an application's own menu cannot behave differently. A
+// menu that is not unpainted keeps the theme's look.
+//
+// Call it in the body, before the rows, on every paint: the setting lasts one
+// paint.
+func (m *MenuItems) Unpainted() *MenuItems {
+	m.unpainted = true
+	return m
+}
+
+// DrawPanel paints an Unpainted menu's surface, inside the menu's layer and
+// clipping and within its entrance. Nil paints no surface.
+func (m *MenuItems) DrawPanel(draw func(canvas *gfx.Canvas, bounds gfx.Rect, theme gfx.Theme)) *MenuItems {
+	m.drawPanel = draw
+	return m
+}
+
+// DrawItem paints each row of an Unpainted menu, actions, group labels and
+// separators alike, after the menu has declared the row's hit.
+func (m *MenuItems) DrawItem(draw func(MenuItemParts)) *MenuItems {
+	m.drawItem = draw
+	return m
+}
+
+// paintItem is the unpainted menu's row painter; it is a method value so
+// painting a menu allocates nothing.
+func (m *MenuItems) paintItem(parts components.MenuItemPaint) {
+	if m.drawItem == nil {
+		return
+	}
+	m.drawItem(MenuItemParts{
+		Canvas: parts.Canvas, Theme: parts.Theme, Rect: parts.Bounds,
+		Label: parts.Label, Description: parts.Description, Shortcut: parts.Shortcut,
+		Checked: parts.Checked, Selected: parts.Selected, Expanded: parts.Expanded,
+		Disabled: parts.Disabled, Active: parts.Active, Destructive: parts.Destructive,
+		Separator: parts.Separator, GroupLabel: parts.GroupLabel, Foreground: parts.Foreground,
+	})
+}
+
+// paintPanel is DrawPanel as the components take it.
+func (m *MenuItems) paintPanel(canvas *gfx.Canvas, bounds gfx.Rect, theme gfx.Theme) {
+	if m.drawPanel != nil {
+		m.drawPanel(canvas, bounds, theme)
+	}
 }
 
 type menuRow struct {
@@ -504,6 +589,7 @@ func (m *MenuItems) paintAt(canvas *gfx.Canvas, theme *Theme, bounds Rect, layer
 		menu := components.BeginContextMenu(canvas, *theme, bounds, components.ContextMenuOptions{
 			Layer: layer, Scope: focus, DismissID: dismiss, Viewport: f.bounds, ID: id,
 			Scroll: &m.scroll, Submenu: m.parent != nil,
+			Unpainted: m.unpainted, PaintPanel: m.panelPainter, PaintItem: m.itemPainter,
 		})
 		for i := range m.items {
 			switch row := &m.items[i]; row.kind {
@@ -536,6 +622,7 @@ func (m *MenuItems) paintAt(canvas *gfx.Canvas, theme *Theme, bounds Rect, layer
 		menu := components.BeginDropdownMenu(canvas, *theme, bounds, components.DropdownMenuOptions{
 			Layer: layer, Scope: focus, DismissID: dismiss, Viewport: f.bounds, ID: id,
 			Scroll: &m.scroll, Side: side, Submenu: m.parent != nil,
+			Unpainted: m.unpainted, PaintPanel: m.panelPainter, PaintItem: m.itemPainter,
 		})
 		for i := range m.items {
 			switch row := &m.items[i]; row.kind {

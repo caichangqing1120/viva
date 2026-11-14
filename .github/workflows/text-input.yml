@@ -63,13 +63,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           go test -c -o "$RUNNER_TEMP/viva-ibus-native.test" ./internal/ibus
-          xvfb-run -a env VIVA_IBUS_TEST_BINARY="$RUNNER_TEMP/viva-ibus-native.test" sh internal/ibus/testdata/native-service.sh libpinyin hangul
+          xvfb-run -a env VIVA_IBUS_TEST_BINARY="$RUNNER_TEMP/viva-ibus-native.test" VIVA_IBUS_TEST_RUN='^TestNative(EngineLifecycle|ClientPreeditMode)$' sh internal/ibus/testdata/native-service.sh libpinyin hangul
+      - name: IBus native frontend composition phases
+        if: runner.os == 'Linux'
+        run: |
+          go test -c -tags vivagtk -o "$RUNNER_TEMP/viva-ibus-frontend.test" ./internal/platform/linux
+          xvfb-run -a env VIVA_IBUS_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN='^TestNativeIBus(Frontend|OwnerReactivation)$' sh internal/ibus/testdata/native-service.sh libpinyin hangul
       - name: GTK native composition lifecycle
         if: runner.os == 'Linux'
-        run: dbus-run-session -- xvfb-run -a env VIVA_GTK_IME_NATIVE=1 GTK_IM_MODULE=simple GDK_BACKEND=x11 NO_AT_BRIDGE=1 G_DEBUG=fatal-criticals go test -tags vivagtk ./internal/platform/linux -run '^(TestGTKNativeComposition|TestGTKNativeTentative.*|TestGTKNativeSameTargetOwnership)$' -count=1 -v -timeout=90s
+        run: dbus-run-session -- xvfb-run -a env VIVA_GTK_IME_NATIVE=1 GTK_IM_MODULE=gtk-im-context-simple GDK_BACKEND=x11 NO_AT_BRIDGE=1 G_DEBUG=fatal-criticals go test -tags vivagtk ./internal/platform/linux -run '^(TestGTKNativeComposition|TestGTKNativeTentative.*|TestGTKNativeSameTargetOwnership)$' -count=1 -v -timeout=90s
       - name: GTK ordinary key dispatch cost
         if: runner.os == 'Linux'
-        run: dbus-run-session -- xvfb-run -a env VIVA_GTK_IME_NATIVE=1 GTK_IM_MODULE=simple GDK_BACKEND=x11 NO_AT_BRIDGE=1 G_DEBUG=fatal-criticals go test -tags vivagtk ./internal/platform/linux -run '^$' -bench '^BenchmarkGTKNativeOrdinaryKey$' -benchmem -benchtime=200ms -count=3 -timeout=90s
+        run: dbus-run-session -- xvfb-run -a env VIVA_GTK_IME_NATIVE=1 GTK_IM_MODULE=gtk-im-context-simple GDK_BACKEND=x11 NO_AT_BRIDGE=1 G_DEBUG=fatal-criticals go test -tags vivagtk ./internal/platform/linux -run '^$' -bench '^BenchmarkGTKNativeOrdinaryKey$' -benchmem -benchtime=200ms -count=3 -timeout=90s
       - name: Linux IME protocol lifecycle
         if: runner.os == 'Linux'
         run: go test ./internal/ibus ./internal/platform/linux -run 'Test(IME|Preedit|CommitAndPreedit|MalformedPreedit)' -count=1 -timeout=90s

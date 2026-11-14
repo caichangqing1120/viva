@@ -39,9 +39,9 @@ const (
 	// CapabilityPreventSleep means PreventSleep can hold the system out of
 	// idle sleep. It does not promise a Linux session has logind to ask.
 	CapabilityPreventSleep
-	// CapabilitySystemProxy means SystemProxy can read the desktop's proxy
-	// settings. Linux reads the environment only, and macOS reports a PAC
-	// policy as ErrSystemProxyUnavailable.
+	// CapabilitySystemProxy means app/proxy.SystemProxy can read the desktop's
+	// proxy settings. Linux reads the environment only, and macOS reports a
+	// PAC policy as an error.
 	CapabilitySystemProxy
 )
 

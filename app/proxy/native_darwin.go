@@ -1,6 +1,6 @@
 //go:build darwin
 
-package app
+package proxy
 
 import (
 	"errors"

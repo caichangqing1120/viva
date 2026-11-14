@@ -1,9 +1,10 @@
-package app
+package proxy
 
 import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -27,6 +28,9 @@ func TestSystemProxyNeedsAnHTTPURL(t *testing.T) {
 // child: net/http caches the environment the first time it is asked, so a
 // table of t.Setenv calls would test the cache, not the proxy.
 func TestSystemProxyReadsTheEnvironmentInAFreshProcess(t *testing.T) {
+	if runtime.GOOS == "js" {
+		t.Skip("a wasm test cannot start a child process")
+	}
 	if os.Getenv("VIVA_PROXY_CHILD") == "1" {
 		target, err := url.Parse("http://example.com/path")
 		if err != nil {

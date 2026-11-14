@@ -15,7 +15,7 @@ import (
 	"github.com/vivaui/viva/text"
 )
 
-type gtkIMEProbeKeys struct {
+type gtkTentativeProbeKeys struct {
 	newEvent  func(int32) uintptr
 	freeEvent func(uintptr)
 	setDevice func(uintptr, uintptr)
@@ -25,43 +25,43 @@ type gtkIMEProbeKeys struct {
 	translate func(uintptr, uint32, uint32, int32, *uint32, *int32, *int32, *uint32) int32
 }
 
-type gtkIMEProbeKey struct {
+type gtkTentativeProbeKey struct {
 	Code         uint32
 	Group, Level int32
 }
 
-type gtkIMEProbeTrial struct {
+type gtkTentativeProbeTrial struct {
 	name, value string
 	signals     []string
 	events      []string
 	failures    []string
 }
 
-type gtkIMEProbe struct {
+type gtkTentativeProbe struct {
 	w       *gtkWindow
-	keys    gtkIMEProbeKeys
+	keys    gtkTentativeProbeKeys
 	editor  *text.Editor
 	context uintptr
 	signals []string
 	events  []platform.TextEvent
 	hook    func(platform.TextEvent)
-	trials  []gtkIMEProbeTrial
+	trials  []gtkTentativeProbeTrial
 }
 
-var gtkIMEProbeActive *gtkIMEProbe
-var gtkIMEProbeOnce sync.Once
-var gtkIMEProbeSignals struct{ start, changed, end, commit uintptr }
+var gtkTentativeProbeActive *gtkTentativeProbe
+var gtkTentativeProbeOnce sync.Once
+var gtkTentativeProbeSignals struct{ start, changed, end, commit uintptr }
 
-func (p *gtkIMEProbe) observe() {
-	gtkIMEProbeOnce.Do(func() {
-		gtkIMEProbeSignals.start = purego.NewCallback(func(ctx, _ uintptr) uintptr {
-			if p := gtkIMEProbeActive; p != nil && p.context == ctx {
+func (p *gtkTentativeProbe) observe() {
+	gtkTentativeProbeOnce.Do(func() {
+		gtkTentativeProbeSignals.start = purego.NewCallback(func(ctx, _ uintptr) uintptr {
+			if p := gtkTentativeProbeActive; p != nil && p.context == ctx {
 				p.signals = append(p.signals, "start")
 			}
 			return 0
 		})
-		gtkIMEProbeSignals.changed = purego.NewCallback(func(ctx, _ uintptr) uintptr {
-			if p := gtkIMEProbeActive; p != nil && p.context == ctx {
+		gtkTentativeProbeSignals.changed = purego.NewCallback(func(ctx, _ uintptr) uintptr {
+			if p := gtkTentativeProbeActive; p != nil && p.context == ctx {
 				var value, attrs uintptr
 				var cursor int32
 				p.w.g.imGetPreedit(ctx, &value, &attrs, &cursor)
@@ -75,14 +75,14 @@ func (p *gtkIMEProbe) observe() {
 			}
 			return 0
 		})
-		gtkIMEProbeSignals.end = purego.NewCallback(func(ctx, _ uintptr) uintptr {
-			if p := gtkIMEProbeActive; p != nil && p.context == ctx {
+		gtkTentativeProbeSignals.end = purego.NewCallback(func(ctx, _ uintptr) uintptr {
+			if p := gtkTentativeProbeActive; p != nil && p.context == ctx {
 				p.signals = append(p.signals, "end")
 			}
 			return 0
 		})
-		gtkIMEProbeSignals.commit = purego.NewCallback(func(ctx, value, _ uintptr) uintptr {
-			if p := gtkIMEProbeActive; p != nil && p.context == ctx {
+		gtkTentativeProbeSignals.commit = purego.NewCallback(func(ctx, value, _ uintptr) uintptr {
+			if p := gtkTentativeProbeActive; p != nil && p.context == ctx {
 				p.signals = append(p.signals, "commit:"+goString(value))
 			}
 			return 0
@@ -90,15 +90,15 @@ func (p *gtkIMEProbe) observe() {
 	})
 	ctx := p.w.ime.ctx
 	if ctx != p.context {
-		p.w.g.connect(ctx, "preedit-start", gtkIMEProbeSignals.start, 0)
-		p.w.g.connect(ctx, "preedit-changed", gtkIMEProbeSignals.changed, 0)
-		p.w.g.connect(ctx, "preedit-end", gtkIMEProbeSignals.end, 0)
-		p.w.g.connect(ctx, "commit", gtkIMEProbeSignals.commit, 0)
+		p.w.g.connect(ctx, "preedit-start", gtkTentativeProbeSignals.start, 0)
+		p.w.g.connect(ctx, "preedit-changed", gtkTentativeProbeSignals.changed, 0)
+		p.w.g.connect(ctx, "preedit-end", gtkTentativeProbeSignals.end, 0)
+		p.w.g.connect(ctx, "commit", gtkTentativeProbeSignals.commit, 0)
 		p.context = ctx
 	}
 }
 
-func (p *gtkIMEProbe) install(editor *text.Editor) {
+func (p *gtkTentativeProbe) install(editor *text.Editor) {
 	p.editor = editor
 	field := platform.TextInput{
 		Target: gfx.Item(1), X: 20, Y: 20, Width: 300, Height: 100, FontSize: 16,
@@ -119,7 +119,7 @@ func (p *gtkIMEProbe) install(editor *text.Editor) {
 	p.signals, p.events = nil, nil
 }
 
-func (p *gtkIMEProbe) press(ctx uintptr, symbol, state uint32) error {
+func (p *gtkTentativeProbe) press(ctx uintptr, symbol, state uint32) error {
 	g := p.w.g
 	keymap := g.gdkKeymapDefault()
 	var entries uintptr
@@ -127,7 +127,7 @@ func (p *gtkIMEProbe) press(ctx uintptr, symbol, state uint32) error {
 	if p.keys.entries(keymap, symbol, &entries, &count) == 0 || entries == 0 || count == 0 {
 		return fmt.Errorf("no native keymap entry for %#x", symbol)
 	}
-	key := *(*gtkIMEProbeKey)(unsafePointer(entries))
+	key := *(*gtkTentativeProbeKey)(unsafePointer(entries))
 	g.gFree(entries)
 	var value, consumed uint32
 	var group, level int32
@@ -158,7 +158,7 @@ func (p *gtkIMEProbe) press(ctx uintptr, symbol, state uint32) error {
 	return nil
 }
 
-func (p *gtkIMEProbe) compose() error {
+func (p *gtkTentativeProbe) compose() error {
 	for _, symbol := range []uint32{'U', '3', 'A', '9'} {
 		if err := p.press(p.w.ime.ctx, symbol, (1<<2)|(1<<0)); err != nil {
 			return err
@@ -167,8 +167,8 @@ func (p *gtkIMEProbe) compose() error {
 	return nil
 }
 
-func (p *gtkIMEProbe) record(name string, failures ...string) {
-	trial := gtkIMEProbeTrial{name: name, value: p.editor.String(), signals: append([]string(nil), p.signals...), failures: failures}
+func (p *gtkTentativeProbe) record(name string, failures ...string) {
+	trial := gtkTentativeProbeTrial{name: name, value: p.editor.String(), signals: append([]string(nil), p.signals...), failures: failures}
 	for _, event := range p.events {
 		trial.events = append(trial.events, fmt.Sprintf("%d/%d:%q", event.Kind, event.CompositionPhase, event.Text))
 		want := text.CompositionNone
@@ -192,13 +192,13 @@ func (p *gtkIMEProbe) record(name string, failures ...string) {
 	p.trials = append(p.trials, trial)
 }
 
-func (p *gtkIMEProbe) run() {
+func (p *gtkTentativeProbe) run() {
 	for _, tentative := range []bool{false, true} {
 		for _, ending := range []string{"commit", "escape", "reset", "focus-out", "window-focus-out"} {
 			editor := text.NewEditor("abc")
 			editor.SetSelection(text.Range{Start: 1, End: 2})
 			if tentative && !editor.EnableTentativeComposition() {
-				p.trials = append(p.trials, gtkIMEProbeTrial{name: ending, failures: []string{"enable refused"}})
+				p.trials = append(p.trials, gtkTentativeProbeTrial{name: ending, failures: []string{"enable refused"}})
 				return
 			}
 			p.install(editor)
@@ -286,13 +286,13 @@ func (p *gtkIMEProbe) run() {
 	p.record("same-target replacement", failures...)
 }
 
-func TestGTKNativeComposition(t *testing.T) {
+func TestGTKNativeTentativeComposition(t *testing.T) {
 	if os.Getenv("VIVA_GTK_IME_NATIVE") != "1" {
 		t.Skip("native GTK IME probe requires VIVA_GTK_IME_NATIVE=1 and a private display")
 	}
-	p := &gtkIMEProbe{}
-	gtkIMEProbeActive = p
-	defer func() { gtkIMEProbeActive = nil }()
+	p := &gtkTentativeProbe{}
+	gtkTentativeProbeActive = p
+	defer func() { gtkTentativeProbeActive = nil }()
 	err := RunGTKApplication(func(application platform.Application) error {
 		a := application.(*gtkApplication)
 		for _, binding := range []struct {

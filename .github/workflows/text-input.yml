@@ -5,11 +5,13 @@ on:
     paths:
       - 'app/**'
       - 'internal/platform/**'
+      - 'internal/ibus/**'
       - '.github/workflows/text-input.yml'
   pull_request:
     paths:
       - 'app/**'
       - 'internal/platform/**'
+      - 'internal/ibus/**'
       - '.github/workflows/text-input.yml'
   workflow_dispatch:
 
@@ -42,6 +44,15 @@ jobs:
           cache: true
       - name: Application input lifecycle
         run: go test ./app -count=1
+      - name: Linux IME protocol lifecycle
+        if: runner.os == 'Linux'
+        run: go test ./internal/ibus ./internal/platform/linux -run 'Test(IME|Preedit|CommitAndPreedit|MalformedPreedit)' -count=1 -timeout=90s
+      - name: Linux text callback ordering
+        if: runner.os == 'Linux'
+        run: go test -race ./internal/platform/linux -run '^TestLinuxTextCallback' -count=1 -timeout=90s
+      - name: GTK text callback ordering
+        if: runner.os == 'Linux'
+        run: go test -tags vivagtk ./internal/platform/linux -run '^TestLinuxTextCallback' -count=1 -timeout=90s
       - name: Windows IME lifecycle
         if: runner.os == 'Windows'
         run: go test ./internal/platform/windows -run 'TestComposition|TestDynamicTextInput' -count=1
@@ -51,6 +62,9 @@ jobs:
       - name: Linux aligned text input
         if: runner.os == 'Linux'
         run: go test ./internal/platform/linux -run '^TestLinux(TextInputAlignmentMatchesGlyphCaretUnderlineAndPointer|RightToLeftAlignmentUsesLineWidthNotLogicalEndCaret|CandidateWindowFollowsAlignmentWhenNativeOverlaysAreHidden)$' -count=1
+      - name: GTK input method teardown ordering
+        if: runner.os == 'Linux'
+        run: go test -tags vivagtk ./internal/platform/linux -run '^TestGTKDestroyDetachesInputMethodBeforeNativeWidget$' -count=1 -v
       # A terminal input is a preedit surface with a cursor of its own: the native
       # editor must draw no caret or selection over it, and blink none.
       - name: Windows terminal preedit draws no native caret

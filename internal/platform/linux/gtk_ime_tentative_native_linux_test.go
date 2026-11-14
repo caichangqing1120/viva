@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -21,6 +22,7 @@ type gtkTentativeProbeKeys struct {
 	setDevice func(uintptr, uintptr)
 	keyboard  func(uintptr) uintptr
 	ref       func(uintptr) uintptr
+	emit      func(uintptr, *byte, *byte)
 	entries   func(uintptr, uint32, *uintptr, *int32) int32
 	translate func(uintptr, uint32, uint32, int32, *uint32, *int32, *int32, *uint32) int32
 }
@@ -45,8 +47,12 @@ type gtkTentativeProbe struct {
 	signals                   []string
 	events                    []platform.TextEvent
 	hook                      func(platform.TextEvent)
+	reject                    func(platform.TextEvent) error
+	expectedErr               error
 	trials                    []gtkTentativeProbeTrial
 	tentative, composingTrial bool
+	asynchronous              bool
+	keyIngress                bool
 }
 
 var gtkTentativeProbeActive *gtkTentativeProbe
@@ -106,6 +112,11 @@ func (p *gtkTentativeProbe) install(editor *text.Editor) {
 		Multiline: true, Color: platform.Color{Alpha: 1}, State: platform.EditorState(editor),
 		OnEvent: func(event platform.TextEvent) (platform.TextState, error) {
 			p.events = append(p.events, event)
+			if p.reject != nil {
+				if err := p.reject(event); err != nil {
+					return platform.EditorState(editor), err
+				}
+			}
 			event.Apply(editor)
 			next := platform.EditorState(editor)
 			if p.hook != nil {
@@ -148,7 +159,9 @@ func (p *gtkTentativeProbe) press(ctx uintptr, symbol, state uint32) error {
 	record.HardwareKeycode, record.Group = uint16(key.Code), uint8(group)
 	p.keys.setDevice(event, device)
 	handled := false
-	if ctx == p.w.ime.ctx {
+	if p.keyIngress && ctx == p.w.ime.ctx {
+		handled = p.w.keyEvent(event) != 0
+	} else if ctx == p.w.ime.ctx {
 		handled = p.w.ime.filter(event)
 	} else {
 		handled = g.imFilterKeypress(ctx, event) != 0
@@ -194,7 +207,7 @@ func (p *gtkTentativeProbe) record(name string, failures ...string) {
 	if p.tentative && !p.editor.TentativeCompositionEnabled() {
 		trial.failures = append(trial.failures, "native ingress disabled the requested tentative capability")
 	}
-	if mirror := p.w.text.state; mirror != platform.EditorState(p.editor).WithoutRedraw() {
+	if mirror := p.w.text.state; !p.w.closed && mirror != platform.EditorState(p.editor).WithoutRedraw() {
 		trial.failures = append(trial.failures, fmt.Sprintf("model/mirror differ: model=%+v mirror=%+v", platform.EditorState(p.editor), mirror))
 	}
 	p.trials = append(p.trials, trial)
@@ -230,13 +243,13 @@ func (p *gtkTentativeProbe) run() {
 					failures = append(failures, err.Error())
 				}
 			case "reset":
-				p.w.g.imReset(p.w.ime.ctx)
+				p.w.ime.callContext(p.w.ime.ctx, p.w.g.imReset)
 			case "focus-out":
 				p.w.g.imFocusOut(p.w.ime.ctx)
 				if !slices.Equal(p.signals, prefix) || editor.String() != "au3A9c" {
 					failures = append(failures, "GtkIMContextSimple focus-out unexpectedly settled preedit")
 				}
-				p.w.g.imReset(p.w.ime.ctx)
+				p.w.ime.callContext(p.w.ime.ctx, p.w.g.imReset)
 			case "window-focus-out":
 				p.w.ime.setFocused(false)
 			}
@@ -248,6 +261,24 @@ func (p *gtkTentativeProbe) run() {
 			}
 			if !slices.Equal(p.signals, wantSignals) || editor.String() != wantText || p.w.text.state.Composing {
 				failures = append(failures, fmt.Sprintf("ending signals=%q text=%q composing=%t", p.signals, editor.String(), p.w.text.state.Composing))
+			}
+			if tentative {
+				terminals := 0
+				wantPhase := text.CompositionCancel
+				if ending == "commit" {
+					wantPhase = text.CompositionResult
+				}
+				for _, event := range p.events {
+					if event.CompositionPhase == text.CompositionResult || event.CompositionPhase == text.CompositionCancel {
+						terminals++
+						if event.CompositionPhase != wantPhase {
+							failures = append(failures, fmt.Sprintf("terminal phase=%d, want %d", event.CompositionPhase, wantPhase))
+						}
+					}
+				}
+				if terminals != 1 {
+					failures = append(failures, fmt.Sprintf("terminal count=%d, want exactly one", terminals))
+				}
 			}
 			p.record(fmt.Sprintf("tentative=%t/%s", tentative, ending), failures...)
 			if !editor.Undo() || ending == "commit" && editor.String() != "ac" || ending != "commit" && editor.String() != "abc" {
@@ -339,12 +370,388 @@ func (p *gtkTentativeProbe) replaceOwner(duringFrame bool) {
 	p.record(name, failures...)
 }
 
+func (p *gtkTentativeProbe) emit(signal, value string) {
+	name, data := cString(signal), cString(value)
+	p.keys.emit(p.w.ime.ctx, &name[0], &data[0])
+}
+
+func (p *gtkTentativeProbe) later(check func()) {
+	a := p.w.app
+	a.g.idleAddFull(250, callbacks().task, a.tasks.add(check), 0)
+}
+
+func (p *gtkTentativeProbe) beginEndTrial() error {
+	p.tentative, p.composingTrial = true, true
+	editor := text.NewEditor("abc")
+	editor.SetSelection(text.Range{Start: 1, End: 2})
+	if !editor.EnableTentativeComposition() {
+		return fmt.Errorf("enable refused")
+	}
+	p.install(editor)
+	return p.compose()
+}
+
+func (p *gtkTentativeProbe) endOrdering() {
+	if err := p.beginEndTrial(); err != nil {
+		p.record("idle end cancellation", err.Error())
+		return
+	}
+	p.emit("preedit-end", "")
+	p.asynchronous = true
+	var failures []string
+	if p.editor.String() != "au3A9c" || !p.w.text.state.Composing {
+		failures = append(failures, "end canceled before the native signal batch returned")
+	}
+	p.later(func() {
+		if p.editor.String() != "ac" || p.w.text.state.Composing || p.w.ime.endTask != 0 || p.w.ime.endSource != 0 {
+			failures = append(failures, "idle end did not settle and release its task")
+		}
+		p.record("idle end cancellation", failures...)
+		if !p.editor.Undo() || p.editor.String() != "abc" {
+			p.trials[len(p.trials)-1].failures = append(p.trials[len(p.trials)-1].failures, "cancel Undo did not restore selected source")
+		}
+		p.endThenResult()
+	})
+}
+
+func (p *gtkTentativeProbe) endThenResult() {
+	if err := p.beginEndTrial(); err != nil {
+		p.record("end before result", err.Error())
+		p.w.destroy()
+		return
+	}
+	p.emit("preedit-end", "")
+	p.emit("commit", "\u03a9")
+	var failures []string
+	results, cancels := 0, 0
+	for _, event := range p.events {
+		if event.CompositionPhase == text.CompositionResult {
+			results++
+		}
+		if event.CompositionPhase == text.CompositionCancel {
+			cancels++
+		}
+	}
+	if p.editor.String() != "a\u03a9c" || p.w.text.state.Composing || results != 1 || cancels != 0 || p.w.ime.endTask != 0 || p.w.ime.endSource != 0 {
+		failures = append(failures, fmt.Sprintf("result text=%q results=%d cancels=%d", p.editor.String(), results, cancels))
+	}
+	p.record("end before result", failures...)
+	p.events, p.signals, p.composingTrial = nil, nil, false
+	p.emit("commit", "\u03a9")
+	failures = nil
+	if p.editor.String() != "a\u03a9\u03a9c" || len(p.events) != 1 || p.events[0].CompositionPhase != text.CompositionNone {
+		failures = append(failures, "ordinary same-value commit after Result was lost or tagged")
+	}
+	p.record("ordinary after result", failures...)
+	if err := p.beginEndTrial(); err != nil {
+		p.record("idle end owner handoff", err.Error())
+		p.w.destroy()
+		return
+	}
+	p.emit("preedit-end", "")
+	old := p.w.ime
+	next := text.NewEditor("abc")
+	next.EnableTentativeComposition()
+	p.install(next)
+	p.composingTrial = false
+	p.later(func() {
+		var failures []string
+		if next.String() != "abc" || len(p.events) != 0 || old.endTask != 0 || old.endSource != 0 {
+			failures = append(failures, "deferred end entered the replacement owner or retained its task")
+		}
+		p.record("idle end owner handoff", failures...)
+		p.closePendingEnd()
+	})
+}
+
+func (p *gtkTentativeProbe) closePendingEnd() {
+	if err := p.beginEndTrial(); err != nil {
+		p.record("pending end close", err.Error())
+		p.w.destroy()
+		return
+	}
+	p.emit("preedit-end", "")
+	ime := p.w.ime
+	task, source, events := ime.endTask, ime.endSource, len(p.events)
+	p.w.destroy()
+	p.w.app.tasks.mu.Lock()
+	retained := p.w.app.tasks.waiting[task] != nil
+	p.w.app.tasks.mu.Unlock()
+	var failures []string
+	if !p.w.closed || p.w.ime != nil || ime.endTask != 0 || ime.endSource != 0 || retained || len(p.events) != events || p.w.g.sourceFind(0, source) != 0 {
+		failures = append(failures, "closing retained a pending task/source or delivered a late event")
+	}
+	p.record("pending end close", failures...)
+}
+
+func (p *gtkTentativeProbe) callbackHandoff() {
+	for _, phase := range []text.CompositionPhase{text.CompositionUpdate, text.CompositionResult, text.CompositionCancel} {
+		if err := p.beginEndTrial(); err != nil {
+			p.record(fmt.Sprintf("phase %d callback handoff", phase), err.Error())
+			return
+		}
+		old := p.editor
+		next := text.NewEditor("abc")
+		next.EnableTentativeComposition()
+		called := false
+		p.hook = func(event platform.TextEvent) {
+			if event.CompositionPhase != phase || phase == text.CompositionUpdate && event.Text != "" {
+				return
+			}
+			p.hook = nil
+			called = true
+			p.install(next)
+		}
+		symbol := uint32(' ')
+		if phase == text.CompositionCancel {
+			symbol = 0xff1b
+		}
+		var failures []string
+		if err := p.press(p.w.ime.ctx, symbol, (1<<2)|(1<<0)); err != nil {
+			failures = append(failures, err.Error())
+		}
+		p.hook, p.composingTrial = nil, false
+		wantOld := "ac"
+		if phase == text.CompositionResult {
+			wantOld = "a\u03a9c"
+		}
+		if !called || p.editor != next || next.String() != "abc" || old.String() != wantOld || len(p.events) != 0 {
+			failures = append(failures, fmt.Sprintf("called=%t old=%q next=%q events=%d", called, old.String(), next.String(), len(p.events)))
+		}
+		p.record(fmt.Sprintf("phase %d callback handoff", phase), failures...)
+	}
+}
+
+func (p *gtkTentativeProbe) provenance() {
+	p.tentative, p.composingTrial = true, false
+	editor := text.NewEditor("abc")
+	editor.SetSelection(text.Range{Start: 1, End: 2})
+	editor.EnableTentativeComposition()
+	editor.ApplyComposition(text.CompositionEvent{Phase: text.CompositionUpdate, Text: "M"})
+	p.install(editor)
+	var failures []string
+	p.emit("preedit-changed", "")
+	if len(p.events) != 0 || editor.String() != "aMc" {
+		failures = append(failures, "idle native empty preedit changed a model-only composition")
+	}
+	if err := p.press(p.w.ime.ctx, 'r', 0); err != nil {
+		failures = append(failures, err.Error())
+	}
+	if len(p.events) != 1 || p.events[0].CompositionPhase != text.CompositionNone {
+		failures = append(failures, "ordinary native commit inferred Result from model-only preedit")
+	}
+	p.record("model-only preedit ordinary commit", failures...)
+	editor = text.NewEditor("abc")
+	editor.SetSelection(text.Range{Start: 1, End: 2})
+	editor.EnableTentativeComposition()
+	p.install(editor)
+	p.emit("preedit-changed", "")
+	failures = nil
+	if len(p.events) != 0 || editor.String() != "abc" || editor.Selection() != (text.Range{Start: 1, End: 2}) || editor.CanUndo() {
+		failures = append(failures, "an idle empty preedit changed source or history")
+	}
+	p.record("idle empty preedit", failures...)
+	p.events, p.signals, p.composingTrial = nil, nil, true
+	p.emit("preedit-start", "")
+	p.emit("preedit-changed", "")
+	failures = nil
+	if len(p.events) != 1 || p.events[0].Kind != platform.TextSetMarked || p.events[0].CompositionPhase != text.CompositionUpdate {
+		failures = append(failures, "active empty preedit was not an Update")
+	}
+	p.emit("preedit-end", "")
+	p.asynchronous = true
+	p.later(func() {
+		if len(p.events) != 2 || p.events[1].CompositionPhase != text.CompositionCancel || editor.String() != "abc" || editor.CanUndo() {
+			failures = append(failures, "empty session did not cancel without editing source")
+		}
+		p.record("active empty preedit", failures...)
+		p.w.destroy()
+	})
+}
+
+func (p *gtkTentativeProbe) keyBoundaries() {
+	for _, shortcut := range []bool{false, true} {
+		if err := p.beginEndTrial(); err != nil {
+			p.record("key before end idle", err.Error())
+			return
+		}
+		// Reset GTK's compose buffer without unwinding a bridge-owned native call.
+		p.w.g.imReset(p.w.ime.ctx)
+		p.events, p.composingTrial = nil, false
+		shortcuts := 0
+		if shortcut {
+			p.w.config.OnShortcut = func(platform.KeyEvent) (platform.Frame, bool, error) {
+				shortcuts++
+				return platform.Frame{}, true, nil
+			}
+		}
+		p.keyIngress = true
+		var failures []string
+		for _, symbol := range []uint32{'r', 's'} {
+			if err := p.press(p.w.ime.ctx, symbol, 0); err != nil {
+				failures = append(failures, err.Error())
+			}
+		}
+		p.keyIngress, p.w.config.OnShortcut = false, nil
+		want := "arsc"
+		wantEvents, wantShortcuts := 3, 0
+		if shortcut {
+			want, wantEvents, wantShortcuts = "ac", 1, 2
+		}
+		if p.editor.String() != want || len(p.events) != wantEvents || p.events[0].CompositionPhase != text.CompositionCancel || shortcuts != wantShortcuts || p.w.ime.endTask != 0 || p.w.ime.endSource != 0 {
+			failures = append(failures, fmt.Sprintf("text=%q events=%d shortcuts=%d pending=%t", p.editor.String(), len(p.events), shortcuts, p.w.ime.ending))
+		}
+		p.record(fmt.Sprintf("key before end idle shortcut=%t", shortcut), failures...)
+		if !shortcut && (!p.editor.Undo() || p.editor.String() != "ac") {
+			p.trials[len(p.trials)-1].failures = append(p.trials[len(p.trials)-1].failures, "ordinary keys after Cancel did not coalesce")
+		}
+	}
+	for _, state := range []uint32{gdkControlMask, gdkMetaMask} {
+		p.tentative, p.composingTrial = true, true
+		editor := text.NewEditor("abc")
+		editor.EnableTentativeComposition()
+		p.install(editor)
+		p.emit("preedit-start", "")
+		p.emit("preedit-changed", "")
+		shortcuts, filtered := 0, 0
+		p.w.config.OnShortcut = func(platform.KeyEvent) (platform.Frame, bool, error) {
+			shortcuts++
+			return platform.Frame{}, true, nil
+		}
+		filter := p.w.g.imFilterKeypress
+		p.w.g.imFilterKeypress = func(ctx, event uintptr) int32 {
+			filtered++
+			return filter(ctx, event)
+		}
+		p.keyIngress = true
+		var failures []string
+		if err := p.press(p.w.ime.ctx, 'q', state); err != nil {
+			failures = append(failures, err.Error())
+		}
+		p.keyIngress, p.w.config.OnShortcut, p.w.g.imFilterKeypress = false, nil, filter
+		if shortcuts != 0 || filtered != 1 {
+			failures = append(failures, fmt.Sprintf("active empty session shortcuts=%d native filters=%d", shortcuts, filtered))
+		}
+		p.record(fmt.Sprintf("active empty session modifier=%#x", state), failures...)
+	}
+}
+
+func (p *gtkTentativeProbe) keyCancelHandoff(closeWindow bool) {
+	if err := p.beginEndTrial(); err != nil {
+		p.record("key Cancel handoff", err.Error())
+		return
+	}
+	p.w.g.imReset(p.w.ime.ctx)
+	p.events, p.composingTrial = nil, false
+	old := p.editor
+	next := text.NewEditor("abc")
+	next.EnableTentativeComposition()
+	called := false
+	p.hook = func(event platform.TextEvent) {
+		if event.CompositionPhase == text.CompositionCancel {
+			called = true
+			p.hook = nil
+			if closeWindow {
+				p.w.destroy()
+			} else {
+				p.install(next)
+			}
+		}
+	}
+	p.keyIngress = true
+	var failures []string
+	if err := p.press(p.w.ime.ctx, 'r', 0); err != nil {
+		failures = append(failures, err.Error())
+	}
+	p.keyIngress, p.hook = false, nil
+	if !called || old.String() != "ac" || !closeWindow && (next.String() != "abc" || len(p.events) != 0) || closeWindow && (!p.w.closed || len(p.events) != 1) {
+		failures = append(failures, fmt.Sprintf("called=%t old=%q next=%q callbacks=%d closed=%t", called, old.String(), next.String(), len(p.events), p.w.closed))
+	}
+	p.record(fmt.Sprintf("key Cancel handoff close=%t", closeWindow), failures...)
+}
+
+func (p *gtkTentativeProbe) errorTail(symbol uint32) {
+	if err := p.beginEndTrial(); err != nil {
+		p.record("failed update tail", err.Error())
+		return
+	}
+	p.expectedErr = errors.New("reject native empty update")
+	p.events = nil
+	p.reject = func(event platform.TextEvent) error {
+		if event.CompositionPhase == text.CompositionUpdate && event.Text == "" {
+			return p.expectedErr
+		}
+		return nil
+	}
+	var failures []string
+	if err := p.press(p.w.ime.ctx, symbol, gdkControlMask|gdkShiftMask); err != nil {
+		failures = append(failures, err.Error())
+	}
+	if !p.w.app.stopping || len(p.events) != 1 || p.events[0].CompositionPhase != text.CompositionUpdate || p.w.ime.endTask != 0 || p.w.ime.endSource != 0 {
+		failures = append(failures, fmt.Sprintf("stopping=%t callbacks=%d pending=%t", p.w.app.stopping, len(p.events), p.w.ime.ending))
+	}
+	p.record("failed update tail", failures...)
+}
+
+func (p *gtkTentativeProbe) pendingEndError() {
+	if err := p.beginEndTrial(); err != nil {
+		p.record("pending end after error", err.Error())
+		return
+	}
+	p.w.g.imReset(p.w.ime.ctx)
+	p.events = nil
+	p.expectedErr = errors.New("stop before pending end")
+	p.w.present(platform.Frame{}, p.expectedErr)
+	p.w.ime.finishPreedit(p.w.ime.ctx)
+	var failures []string
+	if len(p.events) != 0 || p.w.ime.endTask != 0 || p.w.ime.endSource != 0 {
+		failures = append(failures, "pending end delivered after error or retained its task/source")
+	}
+	p.record("pending end after error", failures...)
+}
+
 func TestGTKNativeTentativeComposition(t *testing.T) {
 	testGTKNativeTentativeProbe(t, 12, (*gtkTentativeProbe).run)
 }
 
 func TestGTKNativeSameTargetOwnership(t *testing.T) {
 	testGTKNativeTentativeProbe(t, 3, (*gtkTentativeProbe).ownership)
+}
+
+func TestGTKNativeTentativeEndOrdering(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 5, (*gtkTentativeProbe).endOrdering)
+}
+
+func TestGTKNativeTentativeCallbackHandoff(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 3, (*gtkTentativeProbe).callbackHandoff)
+}
+
+func TestGTKNativeTentativeProvenance(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 3, (*gtkTentativeProbe).provenance)
+}
+
+func TestGTKNativeTentativeKeyBoundaries(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 4, (*gtkTentativeProbe).keyBoundaries)
+}
+
+func TestGTKNativeTentativeCancelErrorTail(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) { p.errorTail(0xff1b) })
+}
+
+func TestGTKNativeTentativeResultErrorTail(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) { p.errorTail(' ') })
+}
+
+func TestGTKNativeTentativePendingEndError(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 1, (*gtkTentativeProbe).pendingEndError)
+}
+
+func TestGTKNativeTentativeKeyHandoff(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) { p.keyCancelHandoff(false) })
+}
+
+func TestGTKNativeTentativeKeyClose(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) { p.keyCancelHandoff(true) })
 }
 
 func testGTKNativeTentativeProbe(t *testing.T, trials int, run func(*gtkTentativeProbe)) {
@@ -364,6 +771,7 @@ func testGTKNativeTentativeProbe(t *testing.T, trials int, run func(*gtkTentativ
 			{&p.keys.newEvent, "gdk_event_new"}, {&p.keys.freeEvent, "gdk_event_free"},
 			{&p.keys.setDevice, "gdk_event_set_device"}, {&p.keys.keyboard, "gdk_seat_get_keyboard"},
 			{&p.keys.ref, "g_object_ref"}, {&p.keys.entries, "gdk_keymap_get_entries_for_keyval"},
+			{&p.keys.emit, "g_signal_emit_by_name"},
 			{&p.keys.translate, "gdk_keymap_translate_keyboard_state"},
 		} {
 			if !a.g.lookup(binding.function, binding.name) {
@@ -381,12 +789,14 @@ func testGTKNativeTentativeProbe(t *testing.T, trials int, run func(*gtkTentativ
 		p.w = window.(*gtkWindow)
 		a.enqueue(func() {
 			run(p)
-			p.w.destroy()
+			if !p.asynchronous {
+				p.w.destroy()
+			}
 		})
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, p.expectedErr) {
+		t.Fatalf("application error=%v, want %v", err, p.expectedErr)
 	}
 	if len(p.trials) != trials {
 		t.Fatalf("native trials=%d, want %d", len(p.trials), trials)

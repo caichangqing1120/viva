@@ -283,6 +283,7 @@ type compositionPlan struct {
 	steps   int
 	units   int
 	payload int
+	labels  int
 	mutate  bool
 }
 
@@ -329,6 +330,7 @@ func (editor *Editor) planCompositionEvent(state *compositionState, event Compos
 			plan.steps++
 			plan.units++
 			plan.payload += deleted
+			editor.compositionPlanDeletedLabels(&plan, base[target.Start:target.End])
 		}
 		editor.compositionPlanScalars(&plan, base, target.Start, text, deleted, 0)
 	case CompositionResult:
@@ -340,6 +342,7 @@ func (editor *Editor) planCompositionEvent(state *compositionState, event Compos
 				plan.steps++
 				plan.units++
 				plan.payload += deleted
+				editor.compositionPlanDeletedLabels(&plan, base[target.Start:target.End])
 			}
 			if len(text) > 0 {
 				editor.compositionPlanScalars(&plan, base, target.Start, text, deleted, 0)
@@ -374,6 +377,7 @@ func (editor *Editor) planCompositionEvent(state *compositionState, event Compos
 			plan.steps++
 			plan.units++
 			plan.payload += deleted
+			editor.compositionPlanDeletedLabels(&plan, base[target.Start:target.End])
 			plan.mutate = true
 		}
 	case CompositionCommit:
@@ -395,7 +399,7 @@ func (editor *Editor) planCompositionEvent(state *compositionState, event Compos
 // post-rollback event's own unit headers and retained rune text are required to
 // stay cancelable within the single-action bound.
 func (editor *Editor) compositionPlanFits(state *compositionState, plan compositionPlan) bool {
-	physical := compositionHeaderRunes + plan.payload + plan.units*historyEditRunes
+	physical := compositionHeaderRunes + plan.payload + plan.units*historyEditRunes + plan.labels
 	return physical <= maxSingleEditRunes
 }
 
@@ -409,12 +413,14 @@ func (editor *Editor) compositionPlanScalars(plan *compositionPlan, base []rune,
 	}
 	plan.payload += len(text)
 	overwrite := editor.overwrite
+	if editor.lfLabelState() != nil {
+		editor.compositionPlanScalarLabels(plan, base, start, text, grouped)
+	}
 	if overwrite {
 		plan.units += len(text)
-	} else if len(text) > 1 && (grouped > 0 || editor.AtSavePoint()) {
-		// The grouped first scalar is its own unit, and a current save point
-		// makes the first insertion unable to merge. The remaining contiguous
-		// scalars still coalesce, so two units is the exact worst case.
+	} else if len(text) > 1 && grouped > 0 {
+		// An implicit selection replacement owns the first scalar's unit.
+		// Other scalars coalesce into one new suffix, even at a save point.
 		plan.units += 2
 	} else {
 		plan.units++
@@ -441,6 +447,38 @@ func (editor *Editor) compositionPlanScalars(plan *compositionPlan, base []rune,
 			shift++
 		}
 		cursor++
+	}
+}
+
+func (editor *Editor) compositionPlanDeletedLabels(plan *compositionPlan, removed []rune) {
+	if editor.lfLabelState() != nil {
+		plan.labels += lfLabelPlannedUnitRunes(countLabelLF(removed), 0)
+	}
+}
+
+func (editor *Editor) compositionPlanScalarLabels(plan *compositionPlan, base []rune, start int, text []rune, grouped int) {
+	first := 0
+	if grouped > 0 {
+		inserted := 0
+		if text[0] == '\n' {
+			inserted = 1
+		}
+		plan.labels += lfLabelPlannedUnitRunes(countLabelLF(base[start:start+grouped]), inserted)
+		first = 1
+	}
+	inserted := countLabelLF(text[first:])
+	if inserted == 0 {
+		return
+	}
+	if !editor.overwrite {
+		plan.labels += lfLabelPlannedUnitRunes(0, inserted)
+		return
+	}
+	unit := lfLabelPlannedUnitRunes(0, 1)
+	if inserted > maxSingleEditRunes/unit {
+		plan.labels += maxSingleEditRunes + 1
+	} else {
+		plan.labels += inserted * unit
 	}
 }
 
@@ -735,6 +773,9 @@ func (editor *Editor) truncateCompositionUnits(from int) {
 	for index := from; index < len(editor.history); index++ {
 		edit := &editor.history[index]
 		editor.historyRunes -= editor.historyUnitRunes(edit) + editor.forgetLineBatch(edit)
+		if labels := editor.lfLabelState(); labels != nil {
+			labels.ops.forget(labels, lfLabelHistoryKey(edit))
+		}
 	}
 	clear(editor.history[from:])
 	editor.history = editor.history[:from]

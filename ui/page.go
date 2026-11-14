@@ -266,6 +266,7 @@ type Page struct {
 	hoverArea   gfx.ID                // the scroll area or self-scrolling table the pointer is on
 	selects     []*SelectState        // the Selects of the last paint, which Wheel scrolls
 	labels      []string              // scratch for Choice's labels
+	icons       []gfx.Icon            // scratch for SelectIcon's icons
 	memos       map[gfx.ID]*memoEntry
 	memoBoxes   []memoBox
 	memoChecks  []memoCheckOf
@@ -566,7 +567,7 @@ func (p *Page) hoverPlaceAt(x, y float32) gfx.ID {
 	}
 	for i := range p.tables {
 		route := &p.tables[i]
-		if !route.scrolls || route.bar.IsZero() || !pointInRect(x, y, route.bounds) {
+		if (!route.scrolls && !route.sideways) || (route.bar.IsZero() && route.horizontal.IsZero()) || !pointInRect(x, y, route.bounds) {
 			continue
 		}
 		if area := route.bounds.Width * route.bounds.Height; best.IsZero() || area < bestArea {
@@ -778,6 +779,8 @@ func (p *Page) paintOnce(canvas *gfx.Canvas, bounds Rect, view func(C)) {
 	clear(p.ctx.stateSeq)
 	clear(p.labels)
 	p.labels = p.labels[:0]
+	clear(p.icons)
+	p.icons = p.icons[:0]
 	p.focusPaint = p.focusPaint[:0]
 	for i := range p.held {
 		if id := p.held[i].id; !id.IsZero() && id != canvas.Pressed() && id != canvas.Focused() {
@@ -1063,6 +1066,7 @@ func (p *Page) guard(b Box, id gfx.ID, label string) {
 func (p *Page) TextInput(context app.TextInputContext) *app.TextInput {
 	for _, entry := range p.fields {
 		if entry.id == context.ID && !context.ID.IsZero() {
+			entry.field.input.Alignment = context.Alignment
 			entry.field.input.Editor = entry.field.ensure()
 			return &entry.field.input
 		}
@@ -1135,13 +1139,17 @@ func (p *Page) Wheel(event gfx.ScrollEvent) gfx.EventResult {
 	}
 	for i := len(p.tables) - 1; i >= 0; i-- {
 		route := &p.tables[i]
-		if !route.scrolls || !pointInRect(event.X, event.Y, route.bounds) {
+		if !route.scrolls && !route.sideways || !pointInRect(event.X, event.Y, route.bounds) {
 			continue
 		}
-		if result := route.state.Wheel(event); result.Handled {
-			result.Repaint = result.Repaint || moved
-			return result
+		state := &route.state.Scroll
+		dx, dy := state.wheelSteps(event)
+		if !state.canScroll(dx, dy) {
+			continue
 		}
+		result := state.Wheel(event)
+		result.Repaint = result.Repaint || moved
+		return result
 	}
 	if moved {
 		return gfx.EventResult{Handled: true, Repaint: true}

@@ -238,6 +238,9 @@ func (editor *Editor) historyUnitRunes(edit *historyEdit) int {
 	if edit.kind != editSeparate && len(edit.primitives) > 0 {
 		runes += (cap(edit.primitives) - len(edit.primitives)) * historyPrimitiveRunes
 	}
+	if labels := editor.lfLabelState(); labels != nil {
+		runes += labels.ops.cost(labels, lfLabelHistoryKey(edit))
+	}
 	return runes
 }
 

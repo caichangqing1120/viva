@@ -119,6 +119,7 @@ func WordRange(value string, index int) Range {
 func (editor *Editor) DeleteWord(forward bool) {
 	editor.sealTentativeHistory()
 	editor.BreakUndoGroup()
+	editor.clearSecondary() // a word deletion is a single-selection edit
 	if editor.Selection().Start != editor.Selection().End || editor.composing {
 		editor.DeleteBackward()
 		editor.BreakUndoGroup()
@@ -162,6 +163,7 @@ func (editor *Editor) MoveLineBoundary(end, extend bool) {
 func (editor *Editor) DeleteToLineBoundary(end bool) {
 	editor.sealTentativeHistory()
 	editor.BreakUndoGroup()
+	editor.clearSecondary() // a line deletion is a single-selection edit
 	selection := editor.Selection()
 	if selection.Start != selection.End || editor.composing {
 		editor.DeleteBackward()

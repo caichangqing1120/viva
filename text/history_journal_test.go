@@ -950,8 +950,9 @@ func TestHistoryTrimReleasesCoalescedPrimitiveAccounting(t *testing.T) {
 func TestHistoryDefaultLayoutAndAllocations(t *testing.T) {
 	// 768 of these bytes are the bidi.Resolver upstream's caret walk now keeps
 	// between arrow keys; the rest is the accepted journal and history layout.
-	if got := unsafe.Sizeof(Editor{}); got != 1136 {
-		t.Fatalf("Editor size = %d, want 1136", got)
+	// Inherit the a823813b multi-selection and legacy cancellation layout.
+	if got := unsafe.Sizeof(Editor{}); got != 1224 {
+		t.Fatalf("Editor size = %d, want 1224", got)
 	}
 	if got := unsafe.Sizeof(historyEdit{}); got != 120 {
 		t.Fatalf("historyEdit size = %d, want 120", got)

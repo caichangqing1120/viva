@@ -44,13 +44,24 @@ func (editor *Editor) ownCompositionEventText(state *compositionState) {
 		return
 	}
 	for index := from; index < len(editor.history); index++ {
-		edit := &editor.history[index]
-		if cap(edit.removed) != len(edit.removed) {
-			edit.removed = ownRunes(edit.removed)
-		}
-		if cap(edit.inserted) != len(edit.inserted) {
-			edit.inserted = ownRunes(edit.inserted)
-		}
+		editor.ownCompositionUnitText(&editor.history[index])
+	}
+}
+
+func (editor *Editor) ownCompositionUnitText(edit *historyEdit) {
+	labels := editor.lfLabelState()
+	var previousKey *rune
+	if labels != nil {
+		previousKey = lfLabelHistoryKey(edit)
+	}
+	if cap(edit.removed) != len(edit.removed) {
+		edit.removed = ownRunes(edit.removed)
+	}
+	if cap(edit.inserted) != len(edit.inserted) {
+		edit.inserted = ownRunes(edit.inserted)
+	}
+	if labels != nil && previousKey != lfLabelHistoryKey(edit) {
+		labels.ops.rekey(labels, previousKey, lfLabelHistoryKey(edit))
 	}
 }
 
@@ -153,13 +164,7 @@ func settleCompositionStorage(state *compositionState) {
 	// With a live composition-owned storage owner, own exact text capacity for
 	// the whole retained array so the charge equals the actual cap.
 	for index := range editor.history {
-		edit := &editor.history[index]
-		if cap(edit.removed) != len(edit.removed) {
-			edit.removed = ownRunes(edit.removed)
-		}
-		if cap(edit.inserted) != len(edit.inserted) {
-			edit.inserted = ownRunes(edit.inserted)
-		}
+		editor.ownCompositionUnitText(&editor.history[index])
 	}
 	editor.chargeCompositionCapacity()
 	if !state.enabled && !state.live && !state.active && !state.completed && cap(editor.history) <= maxHistoryEntries {

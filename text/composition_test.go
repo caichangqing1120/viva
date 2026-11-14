@@ -49,10 +49,10 @@ func TestCompositionEnableDisableAndIdempotence(t *testing.T) {
 	if after := conformanceStateOf(editor); !reflect.DeepEqual(after, before) {
 		t.Fatalf("enable changed visible state: %+v, want %+v", after, before)
 	}
-	// 768 of these bytes are the bidi.Resolver upstream's caret walk now keeps
-	// between arrow keys; the rest is the accepted journal and history layout.
-	if got := unsafe.Sizeof(Editor{}); got != 1136 {
-		t.Fatalf("Editor size = %d, want 1136", got)
+	// Match upstream a823813b: multi-selection and legacy cancellation history
+	// are inherited; the LF tracker and tentative producer add no Editor fields.
+	if got := unsafe.Sizeof(Editor{}); got != 1224 {
+		t.Fatalf("Editor size = %d, want 1224", got)
 	}
 	if !editor.EnableTentativeComposition() {
 		t.Fatal("repeated enable refused an already-enabled source")

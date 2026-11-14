@@ -166,6 +166,11 @@ func (editor *Editor) replaceHistory(edit *historyEdit, inverse bool) {
 		editor.recordRetiresCompleted()
 	}
 	journal := editor.journal
+	if labels := editor.lfLabelState(); labels != nil {
+		labels.replaying = true
+		defer func() { labels.replaying = false }()
+		labels.ops.replay(labels, lfLabelHistoryKey(edit), inverse)
+	}
 	batchPrimitives := edit.kind == editSeparate && len(edit.primitives) > 0
 	var contexts []lineContext
 	if batchPrimitives {

@@ -135,6 +135,8 @@ func (tooltip Tooltip) Paint(label string) gfx.Rect {
 	// of it even when a bounded descriptive tooltip would use an ellipsis. Long
 	// tokens already break at whole grapheme clusters in the text engine. The
 	// viewport is a bound on excessive content, not an interactive text limit.
+	// The lines live in a stack scratch: a tooltip that is painted every frame
+	// must not allocate for wrapping that has not changed.
 	var scratch overlayLines
 	lines := tooltip.canvas.WrapLines(scratch[:0], label, metrics.FontSizeS, gfx.WeightRegular, maxWidth-2*padX, int(tooltip.viewport.Height))
 	// One line takes the width of its text; a wrapped label fills the whole

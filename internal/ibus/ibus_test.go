@@ -762,6 +762,60 @@ func TestAFailedSendClosesTheBusAndReleasesPendingKeys(t *testing.T) {
 	}
 }
 
+func TestFailedContextDestructionReleasesBothContextsKeysDespiteReentry(t *testing.T) {
+	bus, first, transport := newTestBus(t, Handler{})
+	transport.createPath = testContext + "_second"
+	second, err := bus.NewContext("second", Handler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completed []string
+	completion := func(name string) func(bool) {
+		return func(handled bool) {
+			completed = append(completed, name)
+			if handled {
+				t.Errorf("%s key was handled after transport failure", name)
+			}
+			if bus.contexts[first.path] == first {
+				t.Error("destroyed context still owns its handler during failure callbacks")
+			}
+			first.Close()
+			second.Close()
+			for _, context := range []*Context{first, second} {
+				if err := context.ProcessKey('n', 49, 0, nil); !errors.Is(err, ErrClosed) {
+					t.Errorf("reentered key returned %v, want ErrClosed", err)
+				}
+			}
+			if _, err := bus.NewContext("reentered", Handler{}); !errors.Is(err, ErrClosed) {
+				t.Errorf("reentered context returned %v, want ErrClosed", err)
+			}
+		}
+	}
+	if err := first.ProcessKey('a', 38, 0, completion("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.ProcessKey('b', 56, 0, completion("second")); err != nil {
+		t.Fatal(err)
+	}
+	sent := len(transport.sent)
+	failure := errors.New("destroy: broken pipe")
+	transport.sendErr = failure
+	first.Close()
+	bus.Close()
+	first.Close()
+	second.Close()
+	if !errors.Is(bus.Err(), failure) || !transport.closed {
+		t.Fatalf("failure = %v, transport closed = %v", bus.Err(), transport.closed)
+	}
+	if !reflect.DeepEqual(completed, []string{"first", "second"}) {
+		t.Fatalf("completion order = %v, want each key released once in order", completed)
+	}
+	if len(bus.pending) != 0 || len(bus.contexts) != 0 || len(transport.sent) != sent {
+		t.Fatalf("after destruction: pending=%d contexts=%d sent=%d, want 0, 0, %d",
+			len(bus.pending), len(bus.contexts), len(transport.sent), sent)
+	}
+}
+
 func TestContextCalls(t *testing.T) {
 	_, context, transport := newTestBus(t, Handler{})
 	if err := context.FocusIn(); err != nil {
@@ -789,6 +843,27 @@ func TestContextCalls(t *testing.T) {
 	location := dbus.NewDecoder(transport.calls("SetCursorLocation")[0].body)
 	if got := [4]int32{location.Int32(), location.Int32(), location.Int32(), location.Int32()}; got != [4]int32{100, -20, 2, 18} {
 		t.Fatalf("cursor location = %v", got)
+	}
+}
+
+func BenchmarkHandledContextKey(b *testing.B) {
+	transport := &fakeTransport{createPath: testContext}
+	bus := newBus(transport)
+	context, err := bus.NewContext("benchmark", Handler{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	answer := dbus.Message{Type: dbus.TypeReturn, Signature: "b", Body: []byte{1, 0, 0, 0}}
+	transport.sent = transport.sent[:0]
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if err := context.ProcessKey('a', 30, 0, nil); err != nil {
+			b.Fatal(err)
+		}
+		answer.ReplySerial = transport.serial
+		bus.answer(&answer)
+		transport.sent = transport.sent[:0]
 	}
 }
 

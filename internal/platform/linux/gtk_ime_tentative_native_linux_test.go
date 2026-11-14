@@ -277,6 +277,35 @@ func (p *gtkTentativeProbe) run() {
 			p.trials[len(p.trials)-1].failures = append(p.trials[len(p.trials)-1].failures, "ordinary GTK commits stopped coalescing")
 		}
 	}
+
+}
+
+func (p *gtkTentativeProbe) ownership() {
+	p.tentative, p.composingTrial = true, false
+	for _, duringFrame := range []bool{false, true} {
+		p.replaceOwner(duringFrame)
+	}
+	editor := text.NewEditor("abc")
+	editor.EnableTentativeComposition()
+	p.install(editor)
+	context := p.w.ime.ctx
+	field := p.w.text.input
+	field.Width += 20
+	p.w.present(platform.Frame{TextInput: platform.TextInputUpdate{Changed: true, Input: &field}}, nil)
+	var failures []string
+	if context != p.w.ime.ctx {
+		failures = append(failures, "geometry-only frame replaced the current native context")
+	}
+	if err := p.press(p.w.ime.ctx, 'r', 0); err != nil {
+		failures = append(failures, err.Error())
+	}
+	if editor.String() != "abcr" {
+		failures = append(failures, fmt.Sprintf("geometry-only frame dropped the native key: %q", editor.String()))
+	}
+	p.record("same-owner geometry", failures...)
+}
+
+func (p *gtkTentativeProbe) replaceOwner(duringFrame bool) {
 	old := text.NewEditor("abc")
 	old.EnableTentativeComposition()
 	p.install(old)
@@ -284,19 +313,42 @@ func (p *gtkTentativeProbe) run() {
 	defer p.w.g.objectUnref(oldContext)
 	next := text.NewEditor("abc")
 	next.EnableTentativeComposition()
-	p.install(next)
-	p.w.g.imReset(oldContext)
 	var failures []string
-	if err := p.press(oldContext, 'z', 0); err != nil {
-		failures = append(failures, err.Error())
+	if duringFrame {
+		p.w.config.FramePresented = func() {
+			p.w.config.FramePresented = nil
+			if err := p.press(oldContext, 'z', 0); err != nil {
+				failures = append(failures, err.Error())
+			}
+		}
+	}
+	p.install(next)
+	if !duringFrame {
+		p.w.g.imReset(oldContext)
+		if err := p.press(oldContext, 'z', 0); err != nil {
+			failures = append(failures, err.Error())
+		}
 	}
 	if p.w.ime.ctx == oldContext || next.String() != "abc" || len(p.events) != 0 {
 		failures = append(failures, fmt.Sprintf("old native context reached replacement input: reused=%t text=%q events=%d", p.w.ime.ctx == oldContext, next.String(), len(p.events)))
 	}
-	p.record("same-target replacement", failures...)
+	name := "same-target replacement"
+	if duringFrame {
+		name = "same-target frame handoff"
+	}
+	p.record(name, failures...)
 }
 
 func TestGTKNativeTentativeComposition(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 12, (*gtkTentativeProbe).run)
+}
+
+func TestGTKNativeSameTargetOwnership(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 3, (*gtkTentativeProbe).ownership)
+}
+
+func testGTKNativeTentativeProbe(t *testing.T, trials int, run func(*gtkTentativeProbe)) {
+	t.Helper()
 	if os.Getenv("VIVA_GTK_IME_NATIVE") != "1" {
 		t.Skip("native GTK IME probe requires VIVA_GTK_IME_NATIVE=1 and a private display")
 	}
@@ -328,7 +380,7 @@ func TestGTKNativeTentativeComposition(t *testing.T) {
 		}
 		p.w = window.(*gtkWindow)
 		a.enqueue(func() {
-			p.run()
+			run(p)
 			p.w.destroy()
 		})
 		return nil
@@ -336,8 +388,8 @@ func TestGTKNativeTentativeComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.trials) != 13 {
-		t.Fatalf("native trials=%d, want 13", len(p.trials))
+	if len(p.trials) != trials {
+		t.Fatalf("native trials=%d, want %d", len(p.trials), trials)
 	}
 	for _, trial := range p.trials {
 		t.Logf("%s signals=%q text=%q events=%q", trial.name, trial.signals, trial.value, trial.events)

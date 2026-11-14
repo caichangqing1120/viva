@@ -42,6 +42,7 @@ func TestGTKClipboardHTMLWriteReportsUnsupportedWithoutSetWithData(t *testing.T)
 		htmlWrites++
 		return 1
 	}
+	clipboards.atomIntern = func(*byte, int32) uintptr { return 1 }
 	clipboards.selectionGet = func(uintptr) uintptr { return 1 }
 	clipboards.selectionSet = func(data, kind uintptr, format int32, bytes *byte, length int32) int32 { return 1 }
 	if err := SetClipboardHTML("<b>bold</b>", "bold"); err != nil || htmlWrites != 1 {

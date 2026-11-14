@@ -119,6 +119,17 @@ func (editor *Editor) LFLabels(dst []byte) ([]byte, bool) {
 	return dst, true
 }
 
+// LFLabelRevision identifies the current label state for an enabled editor.
+// It changes on label mutations and replay, including equal-text edits. Cache
+// keys must include the editor identity; a revision is local to that source.
+func (editor *Editor) LFLabelRevision() (uint64, bool) {
+	state := editor.lfLabelState()
+	if state == nil {
+		return 0, false
+	}
+	return state.revision, true
+}
+
 // SetLFLabels relabels current LF identities and the insertion default without
 // adding text history. Those identities retain the labels through Undo/Redo.
 // An invalid count, disabled tracker, active composition or private transaction

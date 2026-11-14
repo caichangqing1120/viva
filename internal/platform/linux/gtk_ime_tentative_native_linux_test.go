@@ -38,14 +38,15 @@ type gtkTentativeProbeTrial struct {
 }
 
 type gtkTentativeProbe struct {
-	w       *gtkWindow
-	keys    gtkTentativeProbeKeys
-	editor  *text.Editor
-	context uintptr
-	signals []string
-	events  []platform.TextEvent
-	hook    func(platform.TextEvent)
-	trials  []gtkTentativeProbeTrial
+	w                         *gtkWindow
+	keys                      gtkTentativeProbeKeys
+	editor                    *text.Editor
+	context                   uintptr
+	signals                   []string
+	events                    []platform.TextEvent
+	hook                      func(platform.TextEvent)
+	trials                    []gtkTentativeProbeTrial
+	tentative, composingTrial bool
 }
 
 var gtkTentativeProbeActive *gtkTentativeProbe
@@ -172,12 +173,16 @@ func (p *gtkTentativeProbe) record(name string, failures ...string) {
 	for _, event := range p.events {
 		trial.events = append(trial.events, fmt.Sprintf("%d/%d:%q", event.Kind, event.CompositionPhase, event.Text))
 		want := text.CompositionNone
-		if p.editor.TentativeCompositionEnabled() {
+		if p.tentative {
 			switch event.Kind {
 			case platform.TextSetMarked:
 				want = text.CompositionUpdate
 			case platform.TextInsert:
-				want = text.CompositionResult
+				if p.composingTrial {
+					want = text.CompositionResult
+				}
+			case platform.TextCancelComposition:
+				want = text.CompositionCancel
 			default:
 				trial.failures = append(trial.failures, fmt.Sprintf("unexpected tentative event kind %d", event.Kind))
 			}
@@ -185,6 +190,9 @@ func (p *gtkTentativeProbe) record(name string, failures ...string) {
 		if event.CompositionPhase != want {
 			trial.failures = append(trial.failures, fmt.Sprintf("event %d phase=%d, want %d", event.Kind, event.CompositionPhase, want))
 		}
+	}
+	if p.tentative && !p.editor.TentativeCompositionEnabled() {
+		trial.failures = append(trial.failures, "native ingress disabled the requested tentative capability")
 	}
 	if mirror := p.w.text.state; mirror != platform.EditorState(p.editor).WithoutRedraw() {
 		trial.failures = append(trial.failures, fmt.Sprintf("model/mirror differ: model=%+v mirror=%+v", platform.EditorState(p.editor), mirror))
@@ -194,6 +202,7 @@ func (p *gtkTentativeProbe) record(name string, failures ...string) {
 
 func (p *gtkTentativeProbe) run() {
 	for _, tentative := range []bool{false, true} {
+		p.tentative, p.composingTrial = tentative, true
 		for _, ending := range []string{"commit", "escape", "reset", "focus-out", "window-focus-out"} {
 			editor := text.NewEditor("abc")
 			editor.SetSelection(text.Range{Start: 1, End: 2})
@@ -248,6 +257,7 @@ func (p *gtkTentativeProbe) run() {
 				p.trials[len(p.trials)-1].failures = append(p.trials[len(p.trials)-1].failures, fmt.Sprintf("second Undo=%q", editor.String()))
 			}
 		}
+		p.composingTrial = false
 		plain := text.NewEditor("abc")
 		if tentative {
 			plain.EnableTentativeComposition()

@@ -18,10 +18,12 @@ import (
 // and commits the choice as it does on the other platforms. The input method owns the candidate
 // window; this side says when the field has the keyboard and where its caret is.
 type gtkIME struct {
-	w      *gtkWindow
-	g      *gtkLibrary
-	ctx    uintptr
-	target gfx.ID
+	w         *gtkWindow
+	g         *gtkLibrary
+	ctx       uintptr
+	target    gfx.ID
+	owner     text.CompositionIdentity
+	tentative bool
 	// focused is whether the window has the keyboard; active is whether the context was told the
 	// field does.
 	focused bool
@@ -39,7 +41,8 @@ type gtkIME struct {
 }
 
 func newGTKIME(w *gtkWindow) *gtkIME {
-	ime := &gtkIME{w: w, g: w.g, target: w.text.input.Target}
+	ime := &gtkIME{w: w, g: w.g, target: w.text.input.Target,
+		owner: w.text.state.CompositionIdentity, tentative: w.text.state.TentativeComposition}
 	ime.open()
 	return ime
 }
@@ -52,6 +55,10 @@ func (ime *gtkIME) open() {
 	g.connect(ime.ctx, "preedit-changed", cb.preedit, w.id)
 	g.connect(ime.ctx, "retrieve-surrounding", cb.surrounding, w.id)
 	g.connect(ime.ctx, "delete-surrounding", cb.deleteSurrounding, w.id)
+}
+
+func (ime *gtkIME) sameOwner(input *platform.TextInput) bool {
+	return input.Target == ime.target && input.State.CompositionIdentity == ime.owner && input.State.TentativeComposition == ime.tentative
 }
 
 // realized gives the context its window, which exists once the toplevel is realized.
@@ -125,12 +132,13 @@ func (ime *gtkIME) sync() {
 		return
 	}
 	text := ime.w.text
-	if text.input.Target != ime.target {
+	if !ime.sameOwner(&text.input) {
 		ime.close()
 		if ime.w.closed {
 			return
 		}
 		ime.target = text.input.Target
+		ime.owner, ime.tentative = text.state.CompositionIdentity, text.state.TentativeComposition
 		ime.open()
 	}
 	context := ime.ctx

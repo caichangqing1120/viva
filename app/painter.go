@@ -201,10 +201,19 @@ func newPainterWithClock(canvas *gfx.Canvas, config *Config, clock func() time.D
 	}
 	painter.onTextEvent = painter.applyTextEvent
 	painter.clipboardText = func() string {
-		if painter.activeText == nil || painter.activeText.CopyText == nil {
+		active := painter.activeText
+		if active == nil || active.CopyText == nil {
 			return ""
 		}
-		return painter.activeText.CopyText()
+		epoch := painter.textEpoch
+		override, rectangular := painter.nativeText.CopyOverride, painter.nativeText.CopyRectangular
+		value := active.CopyText()
+		// A reentrant provider must not copy old text or apply Cut to its replacement.
+		if painter.activeText != active || painter.textEpoch != epoch ||
+			painter.nativeText.CopyOverride != override || painter.nativeText.CopyRectangular != rectangular {
+			return ""
+		}
+		return value
 	}
 	if config.WindowMode == WindowCustomTitlebar && controlsDrawnByViva {
 		painter.controls = newWindowControls(config)
@@ -1321,6 +1330,7 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 		AltSendsEscape: input.AltSendsEscape, KeyReleases: context.Terminal && input.KeyReleases, DisableIME: input.DisableIME, MonoFace: input.MonoFace, CellWidth: cellWidth, Baseline: baseline,
 		NavigationKeys:     input.NavigationKeys || context.NavigationKeys,
 		CopyOverride:       input.CopyOverride,
+		CopyRectangular:    input.CopyRectangular,
 		CopyText:           painter.clipboardText,
 		HideNativeOverlays: input.HideNativeOverlays || context.HideNativeOverlays,
 		Color: platform.Color{
@@ -1392,15 +1402,23 @@ func (painter *painter) disableTextInput() platform.TextInputUpdate {
 func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextState, error) {
 	painter.tap.Cancel()
 	active := painter.activeText
-	if active == nil || active.Editor == nil && active.OnEvent == nil {
+	// The installed owner is the editor the platform has been told about, not
+	// whatever the last published TextInput names: a cached provider can hand
+	// back a different Editor before the next sync. Keep activeText for the
+	// provider's own state and CopyText.
+	editor := painter.activeEditor
+	if editor == nil && active != nil {
+		editor = active.Editor
+	}
+	if active == nil || editor == nil && active.OnEvent == nil {
 		return platform.TextState{}, fmt.Errorf("app: native text event without an active handler")
 	}
 	epoch := painter.textEpoch
 	appEvent := appTextEvent(event)
 	explicit := event.CompositionPhase != text.CompositionNone
 	if explicit {
-		if active.Editor != nil {
-			explicit = active.Editor.TentativeCompositionEnabled()
+		if editor != nil {
+			explicit = editor.TentativeCompositionEnabled()
 		} else {
 			explicit = active.State.TentativeComposition
 		}
@@ -1421,12 +1439,12 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 		return painter.nativeText.State, nil
 	}
 	var next TextState
-	if active.Editor != nil {
-		accepted := appEvent.apply(active.Editor)
-		if painter.nativeText.Secure && accepted && !active.Editor.TentativeCompositionActive() {
-			active.Editor.ClearHistory()
+	if editor != nil {
+		accepted := appEvent.apply(editor)
+		if painter.nativeText.Secure && accepted && !editor.TentativeCompositionActive() {
+			editor.ClearHistory()
 		}
-		next = TextStateOf(active.Editor)
+		next = TextStateOf(editor)
 	} else {
 		var err error
 		if next, err = active.OnEvent(appEvent); err != nil {
@@ -1457,7 +1475,7 @@ func samePlatformTextInput(left, right platform.TextInput) bool {
 		left.Alignment == right.Alignment && left.Layer == right.Layer && left.Multiline == right.Multiline && left.Secure == right.Secure && left.Terminal == right.Terminal && left.MonoFace == right.MonoFace && left.CellWidth == right.CellWidth && left.Baseline == right.Baseline &&
 		left.AltSendsEscape == right.AltSendsEscape && left.KeyReleases == right.KeyReleases && left.DisableIME == right.DisableIME &&
 		left.NavigationKeys == right.NavigationKeys &&
-		left.CopyOverride == right.CopyOverride &&
+		left.CopyOverride == right.CopyOverride && left.CopyRectangular == right.CopyRectangular &&
 		left.HideNativeOverlays == right.HideNativeOverlays &&
 		left.Placed == right.Placed && left.CaretX == right.CaretX && left.CaretY == right.CaretY &&
 		left.CaretWidth == right.CaretWidth && left.CaretHeight == right.CaretHeight &&

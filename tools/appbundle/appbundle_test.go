@@ -493,7 +493,7 @@ func TestRequiredMacOSReadsTheLinkersDeploymentTarget(t *testing.T) {
 	os.WriteFile(source, []byte("package main\nfunc main(){}\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module probe\ngo 1.26\n"), 0o644)
 	binary := filepath.Join(dir, "probe")
-	build := exec.Command("go", "build", "-o", binary, ".")
+	build := exec.Command("go", "build", "-trimpath", "-o", binary, ".")
 	build.Dir = dir
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, output)

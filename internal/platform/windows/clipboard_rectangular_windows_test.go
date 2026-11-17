@@ -103,13 +103,14 @@ func TestColumnClipboardNativeWritesUnicodeAndBothMarkers(t *testing.T) {
 
 func TestColumnClipboardNativeReadsIndependentMarkers(t *testing.T) {
 	for _, test := range []struct {
-		name, format string
-		data         []byte
-		rectangular  bool
+		name, format      string
+		data              []byte
+		rectangular       bool
+		legacyRectangular bool
 	}{
 		{name: "unmarked"},
-		{name: "MSDEV data", format: "MSDEVColumnSelect", data: []byte{0}, rectangular: true},
-		{name: "MSDEV delayed data", format: "MSDEVColumnSelect", rectangular: true},
+		{name: "MSDEV data", format: "MSDEVColumnSelect", data: []byte{0}, rectangular: true, legacyRectangular: true},
+		{name: "MSDEV delayed data", format: "MSDEVColumnSelect", rectangular: true, legacyRectangular: true},
 		{name: "Borland column", format: "Borland IDE Block Type", data: []byte{2}, rectangular: true},
 		{name: "Borland stream", format: "Borland IDE Block Type", data: []byte{1}},
 		{name: "Borland oversized", format: "Borland IDE Block Type", data: []byte{2, 0}},
@@ -126,7 +127,35 @@ func TestColumnClipboardNativeReadsIndependentMarkers(t *testing.T) {
 			if got, rectangular, err := ClipboardTextWithFormat(); err != nil || got != value || rectangular != test.rectangular {
 				t.Fatalf("independent clipboard = %q, rectangular=%v, err=%v; want rectangular=%v", got, rectangular, err, test.rectangular)
 			}
+			if got := ClipboardRectangular(); got != test.legacyRectangular {
+				t.Fatalf("legacy marker = %v; want %v", got, test.legacyRectangular)
+			}
 		})
+	}
+}
+
+func TestColumnClipboardNativeLegacyMarkerQueryDoesNotRequireText(t *testing.T) {
+	state := columnClipboardWindow(t)
+	if opened, _, err := openClipboard.Call(state.window); opened == 0 {
+		t.Fatalf("open marker-only fixture: %v", err)
+	}
+	if emptied, _, err := emptyClipboard.Call(); emptied == 0 {
+		closeClipboard.Call()
+		t.Fatalf("empty marker-only fixture: %v", err)
+	}
+	closeClipboard.Call()
+	addColumnClipboardMarker(t, state.window, "MSDEVColumnSelect", nil)
+	if !ClipboardRectangular() {
+		t.Fatal("marker-only clipboard was not recognized")
+	}
+	if value, rectangular, err := ClipboardTextWithFormat(); err != nil || value != "" || rectangular {
+		t.Fatalf("text snapshot without Unicode text = %q/%v/%v", value, rectangular, err)
+	}
+	if err := SetClipboardText("plain"); err != nil {
+		t.Fatal(err)
+	}
+	if ClipboardRectangular() {
+		t.Fatal("plain text retained a column marker")
 	}
 }
 

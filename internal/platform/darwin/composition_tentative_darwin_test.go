@@ -28,10 +28,14 @@ func TestNativeTentativeCompositionBridge(t *testing.T) {
 	if err := os.WriteFile(overlay, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "test", "-race", "-overlay", overlay,
+	goTool := "go"
+	if root := runtime.GOROOT(); root != "" {
+		goTool = filepath.Join(root, "bin", "go")
+	}
+	command := exec.Command(goTool, "test", "-race", "-overlay", overlay,
 		"-run", "^TestDarwinTentativeProbe", "-count=1", "-v", ".")
 	if os.Getenv("VIVA_TENTATIVE_BENCH") == "1" {
-		command = exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "test", "-overlay", overlay,
+		command = exec.Command(goTool, "test", "-overlay", overlay,
 			"-run", "^$", "-bench", "^BenchmarkDarwinTentativeProbe", "-benchmem", "-benchtime=200ms", "-count=5", ".")
 	}
 	output, err := command.CombinedOutput()

@@ -131,7 +131,7 @@ func compositionMessageWindow(t *testing.T, editor *text.Editor) (*windowState, 
 	state := dynamicTextState(0, 0)
 	state.window, state.scale, state.ready = staticWindow(t), 1, true
 	if err := state.renderer.initialize(state.window, platform.Color{Alpha: 1}); err != nil {
-		t.Skipf("no graphics device for the native message surface: %v", err)
+		t.Fatalf("initialize native message surface: %v", err)
 	}
 	t.Cleanup(func() {
 		state.stopCaretTimer()

@@ -509,19 +509,45 @@ func (b Box) HitOutset(top, right, bottom, left float32) Box {
 	return b
 }
 
-// Chosen reports which option of a Segmented control this paint is delivering a click
-// on, and false in every other paint, like Clicked for the whole control:
+// Chosen reports which item this paint is delivering a click on: the option of a
+// Segmented control, or the page item of a Pagination. It is false in every other
+// paint, like Clicked for the whole control:
 //
 //	seg := f.Segmented(options, m.theme)
 //	if id, ok := seg.Chosen(); ok { m.theme = id }
 func (b Box) Chosen() (gfx.ID, bool) {
 	n := b.n()
-	if n.kind != kindSegmented || b.f.canvas == nil {
+	if b.f.canvas == nil {
 		return gfx.ID{}, false
 	}
-	for _, option := range b.f.segmented[n.aux].options {
-		if b.f.canvas.Clicked(option.ID) {
-			return option.ID, true
+	if n.flags&flagAlertDialog != 0 {
+		spec := &b.f.widgets.alertDialogs[n.aux].spec
+		for _, id := range [2]gfx.ID{spec.ActionID, spec.CancelID} {
+			if !id.IsZero() && b.f.canvas.Clicked(id) {
+				return id, true
+			}
+		}
+		return gfx.ID{}, false
+	}
+	switch n.kind {
+	case kindSegmented:
+		for _, option := range b.f.segmented[n.aux].options {
+			if b.f.canvas.Clicked(option.ID) {
+				return option.ID, true
+			}
+		}
+	case kindPagination:
+		for _, item := range b.f.paginationItems(n) {
+			if !item.ID.IsZero() && b.f.canvas.Clicked(item.ID) {
+				return item.ID, true
+			}
+		}
+	case kindSplitButton:
+		d := &b.f.widgets.splitButtons[n.aux]
+		for _, id := range [2]gfx.ID{d.primary, d.menu} {
+			if !id.IsZero() && b.f.canvas.Clicked(id) {
+				return id, true
+			}
 		}
 	}
 	return gfx.ID{}, false
@@ -556,6 +582,9 @@ func (b Box) BesideBox(anchor Box, gap float32, align Align) Box {
 
 // ChosenIndex is Chosen for a control made by Choice: the index of the clicked label.
 func (b Box) ChosenIndex() (int, bool) {
+	if b.n().kind != kindSegmented {
+		return 0, false
+	}
 	id, ok := b.Chosen()
 	if !ok {
 		return 0, false

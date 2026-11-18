@@ -140,6 +140,12 @@ func (f *frame) measureLeafIn(n *node) {
 		if n.buttonSize >= components.ButtonSizeIcon {
 			n.pref[axisX] = n.pref[axisY]
 		}
+	case kindBadge:
+		w, h := components.BadgeExtent(f.canvas, f.theme, n.text)
+		n.pref = [2]float32{w, h}
+	case kindPagination:
+		w, h := components.PaginationExtent(f.canvas, f.theme, f.paginationItems(n))
+		n.pref = [2]float32{w, h}
 	case kindSplitButton:
 		button := components.BeginButton(f.canvas, f.theme, gfx.ID{}, Rect{}).Size(n.buttonSize).SizeToFit(n.label)
 		trigger := f.widgets.splitButtons[n.aux].triggerWidth

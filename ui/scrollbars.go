@@ -27,6 +27,19 @@ func (f *frame) paintScrollbars(n *node, s *ScrollState) {
 	content := gfx.Size{Width: s.ContentWidth + xs + xe, Height: s.Content + ys + ye}
 	parts := f.canvas.Tree().Sub(s.id.Scope(), s.id.Name())
 	vertical, horizontal := parts.At(0), parts.At(1)
+	if !s.verticalID.IsZero() {
+		vertical = s.verticalID
+	}
+	if !s.horizontalID.IsZero() {
+		horizontal = s.horizontalID
+	}
+	verticalLabel, horizontalLabel := "Vertical scrollbar", "Horizontal scrollbar"
+	if s.verticalLabel != "" {
+		verticalLabel = s.verticalLabel
+	}
+	if s.horizontalLabel != "" {
+		horizontalLabel = s.horizontalLabel
+	}
 	size := s.barSize
 	if size <= 0 && f.page != nil {
 		size = f.page.config.ScrollbarSize
@@ -39,6 +52,12 @@ func (f *frame) paintScrollbars(n *node, s *ScrollState) {
 	theme, revealed := f.theme, float32(1)
 	if f.page != nil {
 		now := f.canvas.Now()
+		if !s.barSeen {
+			// An area first painted with an offset already set is not moving:
+			// only a change seen across two paints lights the bars.
+			s.barSeen = true
+			s.barOffset, s.barOffsetX = s.Offset, s.OffsetX
+		}
 		if s.Offset != s.barOffset || s.OffsetX != s.barOffsetX {
 			s.barOffset, s.barOffsetX, s.barSince, s.barLit = s.Offset, s.OffsetX, now, true
 		}
@@ -67,8 +86,8 @@ func (f *frame) paintScrollbars(n *node, s *ScrollState) {
 		Offset(s.OffsetX, s.Offset).
 		ScrollbarSize(size).
 		HoverScrollbars(revealed > 0.001).
-		VerticalScrollbar(vertical, "Vertical scrollbar", "").
-		HorizontalScrollbar(horizontal, "Horizontal scrollbar", "")
+		VerticalScrollbar(vertical, verticalLabel, "").
+		HorizontalScrollbar(horizontal, horizontalLabel, "")
 	geometry := area.Geometry()
 	if geometry.MaxOffsetY > 0 {
 		f.dragScrollbar(s, vertical, geometry, axisY)

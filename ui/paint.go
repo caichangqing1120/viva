@@ -26,6 +26,10 @@ func (f *frame) paint(i int32) {
 		f.paintDialog(n)
 		return
 	}
+	if n.flags&flagAlertDialog != 0 {
+		f.paintAlertDialog(n)
+		return
+	}
 	if n.flags&flagDrawer != 0 {
 		f.paintDrawerFn(f, n)
 		return
@@ -230,6 +234,10 @@ func (f *frame) paintControl(n *node, r Rect) {
 		f.paintSplitter(n)
 	case kindSplitButton:
 		f.paintSplitButton(n)
+	case kindBadge:
+		f.paintBadge(n)
+	case kindPagination:
+		f.paintPagination(n)
 	case kindSlider:
 		f.paintSlider(n)
 	case kindSwitch:

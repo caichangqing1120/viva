@@ -22,6 +22,7 @@ type gtkIME struct {
 	g         *gtkLibrary
 	ctx       uintptr
 	target    gfx.ID
+	editor    platform.TextInputOwner
 	owner     text.CompositionIdentity
 	tentative bool
 	// focused is whether the window has the keyboard; active is whether the context was told the
@@ -52,7 +53,8 @@ type gtkIME struct {
 
 func newGTKIME(w *gtkWindow) *gtkIME {
 	ime := &gtkIME{w: w, g: w.g, target: w.text.input.Target,
-		owner: w.text.state.CompositionIdentity, tentative: w.text.state.TentativeComposition}
+		editor: w.text.state.InputOwner,
+		owner:  w.text.state.CompositionIdentity, tentative: w.text.state.TentativeComposition}
 	ime.open()
 	return ime
 }
@@ -70,7 +72,8 @@ func (ime *gtkIME) open() {
 }
 
 func (ime *gtkIME) sameOwner(input *platform.TextInput) bool {
-	return input.Target == ime.target && input.State.CompositionIdentity == ime.owner && input.State.TentativeComposition == ime.tentative
+	return input.Target == ime.target && input.State.InputOwner == ime.editor &&
+		input.State.CompositionIdentity == ime.owner && input.State.TentativeComposition == ime.tentative
 }
 
 // realized gives the context its window, which exists once the toplevel is realized.
@@ -177,12 +180,17 @@ func (ime *gtkIME) sync() {
 		return
 	}
 	text := ime.w.text
-	if !ime.sameOwner(&text.input) {
+	// A temporary loss of the field (for example while a file dialog is open)
+	// need not discard the idle context and its per-editor input method state.
+	// A live preedit or an unknown editor must retire the context instead.
+	suspend := !text.enabled && ime.editor != (platform.TextInputOwner{}) && !ime.composing()
+	if !suspend && !ime.sameOwner(&text.input) {
 		ime.close()
 		if ime.w.closed {
 			return
 		}
 		ime.target = text.input.Target
+		ime.editor = text.state.InputOwner
 		ime.owner, ime.tentative = text.state.CompositionIdentity, text.state.TentativeComposition
 		ime.open()
 	}

@@ -951,6 +951,8 @@ func (input TextInput) ClipboardState(action byte) TextState {
 
 // TextState is the complete platform-neutral state mirrored by NSTextInputClient.
 type TextState struct {
+	// InputOwner distinguishes GTK editors even when their target and text match.
+	InputOwner TextInputOwner
 	// SelectionReversed preserves the moving end of a backwards selection.
 	SelectionReversed bool
 	Value             string
@@ -1221,6 +1223,7 @@ func TextHistoryCommand(event KeyEvent) (TextCommand, bool) {
 func EditorState(editor *text.Editor) TextState {
 	composition, composing := editor.Composition()
 	return TextState{
+		InputOwner:           EditorInputOwner(editor),
 		Value:                editor.String(),
 		Selection:            editor.Selection(),
 		SelectionReversed:    editor.Selection().Start != editor.Selection().End && editor.Caret() == editor.Selection().Start,

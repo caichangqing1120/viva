@@ -22,6 +22,7 @@ type TextRange struct {
 
 // TextState is the complete application-owned native editor state.
 type TextState struct {
+	inputOwner platform.TextInputOwner
 	// SelectionReversed preserves the moving end of a backwards selection.
 	SelectionReversed bool
 	Value             string
@@ -255,6 +256,7 @@ func TextStateOf(editor *text.Editor) TextState {
 		Composing:            composing,
 		TentativeComposition: editor.TentativeCompositionEnabled(),
 		compositionIdentity:  editor.TentativeCompositionIdentity(),
+		inputOwner:           platform.EditorInputOwner(editor),
 	}
 }
 
@@ -272,6 +274,7 @@ func platformTextState(state TextState) platform.TextState {
 		TentativeComposition: state.TentativeComposition,
 		Redraw:               state.Redraw,
 		CompositionIdentity:  identity,
+		InputOwner:           state.inputOwner,
 	}
 }
 

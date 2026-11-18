@@ -184,7 +184,10 @@ func (ime *gtkIME) sync() {
 	// need not discard the idle context and its per-editor input method state.
 	// A live preedit or an unknown editor must retire the context instead.
 	suspend := !text.enabled && ime.editor != (platform.TextInputOwner{}) && !ime.composing()
-	if !suspend && !ime.sameOwner(&text.input) {
+	// The editor discarded its marked text independently of GTK. Retire the
+	// context before GTK can commit it during reset, focus-out, or an async reply.
+	discard := text.enabled && ime.active && ime.engineComposing && !text.state.Composing
+	if discard || (!suspend && !ime.sameOwner(&text.input)) {
 		ime.close()
 		if ime.w.closed {
 			return
@@ -217,16 +220,6 @@ func (ime *gtkIME) sync() {
 	}
 	if !ime.active || ime.ctx != context || ime.w.closed {
 		return
-	}
-	// The field stopped composing without the context (a click moved the caret, the application
-	// replaced the text): it must forget its composition or its next key continues one the user no
-	// longer sees.
-	if ime.engineComposing && !text.state.Composing {
-		ime.engineComposing = false
-		ime.callContext(context, ime.g.imReset)
-		if ime.ctx != context || ime.w.closed {
-			return
-		}
 	}
 	ime.updateCursor()
 	ime.updateSurrounding()

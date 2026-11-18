@@ -28,7 +28,8 @@ func TestGTKNativeFcitxComposition(t *testing.T) {
 	if os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" {
 		t.Skip("native Fcitx GTK probe requires the private Fcitx fixture")
 	}
-	testGTKNativeTentativeProbe(t, 10, func(p *gtkTentativeProbe) {
+	const trials = 12
+	testGTKNativeTentativeProbe(t, trials, func(p *gtkTentativeProbe) {
 		probe := &gtkFcitxProbe{p: p, engine: os.Getenv("VIVA_IBUS_ENGINE")}
 		p.asynchronous, p.keyIngress = true, true
 		backend := typeNameOf(p.w.g, p.w.g.gdkDisplayDefault())
@@ -38,7 +39,7 @@ func TestGTKNativeFcitxComposition(t *testing.T) {
 		}
 		t.Logf("native GTK backend=%s engine=%s", backend, probe.engine)
 		if backend != want || !p.w.g.lookup(&probe.contextID, "gtk_im_multicontext_get_context_id") {
-			for range 10 {
+			for range trials {
 				probe.record(fmt.Sprintf("native GTK backend=%s, want=%s, context getter=%t", backend, want, probe.contextID != nil))
 			}
 			p.w.destroy()
@@ -188,13 +189,14 @@ func (probe *gtkFcitxProbe) wait(check func() (bool, error), next func()) {
 }
 
 func (probe *gtkFcitxProbe) begin() {
-	if probe.trial == 10 {
+	endings := [...]string{"commit", "escape", "reset", "native-focus-out", "window-focus-out", "application-discard"}
+	if probe.trial == 2*len(endings) {
 		probe.p.w.destroy()
 		return
 	}
 	p := probe.p
-	p.tentative = probe.trial >= 5
-	probe.ending = []string{"commit", "escape", "reset", "native-focus-out", "window-focus-out"}[probe.trial%5]
+	p.tentative = probe.trial >= len(endings)
+	probe.ending = endings[probe.trial%len(endings)]
 	editor := text.NewEditor("abc")
 	editor.SetSelection(text.Range{Start: 1, End: 2})
 	if p.tentative && !editor.EnableTentativeComposition() {
@@ -270,6 +272,35 @@ func (probe *gtkFcitxProbe) settle() {
 		p.w.ime.active, p.w.ime.focused = false, false
 	case "window-focus-out":
 		p.w.ime.setFocused(false)
+	case "application-discard":
+		p.w.g.objectRef(context)
+		defer p.w.g.objectUnref(context)
+		if !p.editor.CancelComposition() {
+			probe.finish("editor did not discard live preedit")
+			return
+		}
+		field := p.w.text.input
+		settled := platform.EditorState(p.editor)
+		undo, redo, events := p.editor.CanUndo(), p.editor.CanRedo(), len(p.events)
+		probe.want = settled.Value
+		field.State = settled
+		p.w.present(platform.Frame{TextInput: platform.TextInputUpdate{Changed: true, Input: &field}}, nil)
+		if p.editor.String() != probe.want {
+			probe.finish(fmt.Sprintf("native reset reinserted discarded input: got %q, want %q", p.editor.String(), probe.want))
+			return
+		}
+		// The module can deliver a result after the native reset/focus call returns.
+		signal, stale := cString("commit"), cString("stale")
+		p.keys.emit(context, &signal[0], &stale[0])
+		probe.later(50*time.Millisecond, func() {
+			if platform.EditorState(p.editor) != settled || len(p.events) != events ||
+				p.editor.CanUndo() != undo || p.editor.CanRedo() != redo || !p.w.ime.active {
+				probe.finish(fmt.Sprintf("a result after discard changed the editor: text=%q, events=%d, active=%t", p.editor.String(), len(p.events), p.w.ime.active))
+				return
+			}
+			probe.finish("")
+		})
+		return
 	}
 	probe.wait(func() (bool, error) {
 		return p.editor.String() == probe.want && !p.w.text.state.Composing, nil
@@ -301,7 +332,7 @@ func (probe *gtkFcitxProbe) finish(failure string) {
 		} else if probe.ending == "escape" {
 			wantResults, wantCancels = 0, 1
 		}
-		if p.tentative && (results != wantResults || cancels != wantCancels) {
+		if p.tentative && probe.ending != "application-discard" && (results != wantResults || cancels != wantCancels) {
 			failures = append(failures, fmt.Sprintf("results/cancels=%d/%d, want=%d/%d", results, cancels, wantResults, wantCancels))
 		}
 		if p.editor.String() != probe.want || p.w.text.state != platform.EditorState(p.editor).WithoutRedraw() || p.w.text.state.Composing {
@@ -312,7 +343,7 @@ func (probe *gtkFcitxProbe) finish(failure string) {
 		}
 	}
 	probe.record(failures...)
-	if failure == "" && p.tentative {
+	if failure == "" && p.tentative && probe.ending != "application-discard" {
 		undos := []string{"ac", "abc"}
 		if probe.engine == "hangul" {
 			undos = []string{"a\uac00c", "ac", "abc"}

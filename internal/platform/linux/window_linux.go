@@ -179,8 +179,10 @@ type linuxApplication struct {
 
 	// ibus is the connection to the input method daemon, shared by the windows
 	// that take text; ibusTried says it has been looked for.
-	ibus      *ibus.Bus
-	ibusTried bool
+	ibus            *ibus.Bus
+	ibusTried       bool
+	ibusReconnect   *imeReconnect
+	ibusResumeFocus *linuxIME
 
 	// live is every window that can still be posted to, for requests that come
 	// from another goroutine (see post); the loop's own slice is not safe to read
@@ -233,6 +235,7 @@ func RunApplication(start platform.ApplicationStart) error {
 	defer application.closeStatus()
 	defer application.atspiClose()
 	defer application.closeDesktop()
+	defer application.closeInputMethod()
 	// Whoever starts to watch the appearance, from any goroutine, wakes the loop to open the
 	// connection that hears the desktop.
 	platform.SetWatchHook(func() {
@@ -1116,6 +1119,9 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 		}
 		if router.ime != nil && realFocus {
 			router.ime.setFocused(true)
+			if keyboardFocus {
+				router.ime.reconnectOnFocus()
+			}
 		}
 	case xcbFocusOut:
 		state.application.atspiActive(state, false)
@@ -1132,6 +1138,9 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 		}
 		if router.ime != nil && realFocusLoss {
 			router.ime.setFocused(false)
+			if state.application.ibusResumeFocus == router.ime {
+				state.application.ibusResumeFocus = nil
+			}
 		}
 		if realFocusLoss {
 			if err := state.releaseHeldKeys(); err != nil {

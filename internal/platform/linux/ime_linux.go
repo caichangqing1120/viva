@@ -37,8 +37,11 @@ type linuxIME struct {
 
 	// focused is whether the window has the keyboard; active is whether the
 	// engine has been told the field does.
-	focused bool
-	active  bool
+	focused   bool
+	active    bool
+	focusSpan uint64
+	// reconnectTried prevents duplicate FocusIn from retrying in the same span.
+	reconnectTried bool
 	// engineComposing is whether the engine believes a composition is under way.
 	engineComposing bool
 	// cursor is the last caret location sent, and haveCursor says it was sent.
@@ -82,9 +85,8 @@ func (application *linuxApplication) newIME(win *window, textInput *linuxTextInp
 	return ime
 }
 
-// inputMethodBus connects to the daemon the first time a window can take text,
-// and not again: a machine without one is the usual case, and a daemon that
-// starts later is picked up by the next run.
+// inputMethodBus probes for an IME once at startup. An established input
+// method that disconnects may later reconnect on a keyboard focus change.
 func (application *linuxApplication) inputMethodBus() *ibus.Bus {
 	if !application.ibusTried {
 		application.ibusTried = true
@@ -138,6 +140,10 @@ func (ime *linuxIME) close() {
 
 // setFocused records whether the window has the keyboard.
 func (ime *linuxIME) setFocused(focused bool) {
+	if ime.focused != focused {
+		ime.focusSpan++
+		ime.reconnectTried = false
+	}
 	ime.focused = focused
 	ime.sync()
 }

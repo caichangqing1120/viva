@@ -48,9 +48,21 @@ func (ime *linuxIME) open() bool {
 	}
 	ime.bindOwner()
 	ime.epoch++
-	epoch := ime.epoch
-	valid := func() bool { return ime.epoch == epoch && ime.current() }
-	context, err := bus.NewContext("viva", ibus.Handler{
+	context, err := bus.NewContext("viva", ime.handler(ime.epoch, nil))
+	if err != nil {
+		ime.app.checkInputMethod()
+		return false
+	}
+	ime.context = context
+	ime.negotiateTentative(context)
+	return true
+}
+
+func (ime *linuxIME) handler(epoch uint64, adopted func() bool) ibus.Handler {
+	valid := func() bool {
+		return (adopted == nil || adopted()) && ime.epoch == epoch && ime.current()
+	}
+	return ibus.Handler{
 		Commit: func(value string) {
 			if valid() {
 				ime.commit(value)
@@ -71,14 +83,7 @@ func (ime *linuxIME) open() bool {
 				ime.deleteSurrounding(offset, count)
 			}
 		},
-	})
-	if err != nil {
-		ime.app.checkInputMethod()
-		return false
 	}
-	ime.context = context
-	ime.negotiateTentative(context)
-	return true
 }
 
 // negotiateTentative asks the context for native preedit modes. It reports

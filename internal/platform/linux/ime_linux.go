@@ -118,14 +118,14 @@ func (application *linuxApplication) checkInputMethod() {
 	application.rebuildPoll()
 }
 
-// lost abandons the engine. Text it left marked is kept as typed.
+// lost abandons the engine without treating a tentative update as a result.
 func (ime *linuxIME) lost() {
-	keep := ime.phase != nil && ime.phase.session && ime.sameOwner() && !ime.text.closed
+	cancel := ime.phase != nil && ime.phase.session && ime.sameOwner() && !ime.text.closed
 	ime.clearComposition()
 	ime.dead, ime.active, ime.engineComposing = true, false, false
 	ime.context = nil
-	if keep {
-		ime.apply(platform.TextEvent{Kind: platform.TextUnmark, CompositionPhase: text.CompositionCommit})
+	if cancel {
+		ime.apply(platform.TextEvent{Kind: platform.TextCancelComposition, CompositionPhase: text.CompositionCancel})
 	} else if ime.phase == nil && ime.text.state.Composing {
 		ime.apply(platform.TextEvent{Kind: platform.TextUnmark})
 	}

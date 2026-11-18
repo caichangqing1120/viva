@@ -228,17 +228,28 @@ func TestIBusTentativeEmptySessionKeepsControlShortcutsOnTheEnginePath(t *testin
 	}
 }
 
-func TestIBusTentativeDaemonLossKeepsAcceptedVisibleText(t *testing.T) {
+func TestIBusTentativeDaemonLossDiscardsUnconfirmedText(t *testing.T) {
 	h := newTentativeIMEHarness(t)
 	h.preedit(t, nativeMode("你好", ibus.PreeditModeClear))
 	h.ime.lost()
-	if h.editor.String() != "a你好c" || h.editor.CompositionActive() || !h.ime.dead || h.events[len(h.events)-1].CompositionPhase != text.CompositionCommit {
+	if h.editor.String() != "ac" || h.editor.CompositionActive() || !h.ime.dead || h.events[len(h.events)-1].CompositionPhase != text.CompositionCancel {
 		t.Fatalf("lost daemon state=%q active=%t events=%+v", h.editor.String(), h.editor.CompositionActive(), h.events)
 	}
 	h.ime.commit("stale")
 	h.preedit(t, nativeMode("old", ibus.PreeditModeClear))
-	if h.editor.String() != "a你好c" {
+	if h.editor.String() != "ac" {
 		t.Fatal("lost daemon callback edited the field")
+	}
+	key := platform.KeyEvent{Text: "x"}
+	if h.ime.processKey('x', &xcbInputEvent{Detail: 53}, key) {
+		t.Fatal("lost daemon claimed a new key")
+	}
+	if err := h.ime.router.deliverKey(key); err != nil {
+		t.Fatal(err)
+	}
+	if h.editor.String() != "axc" || !h.editor.Undo() || h.editor.String() != "ac" ||
+		!h.editor.Undo() || h.editor.String() != "abc" || h.editor.CanUndo() {
+		t.Fatalf("fallback key or ordinary selection-deletion history changed: %q", h.editor.String())
 	}
 }
 
@@ -299,7 +310,7 @@ func TestIBusTentativeSyncStopsWhenACursorSendRetiresTheContext(t *testing.T) {
 		}
 	}
 	h.ime.sync()
-	if !h.ime.dead || h.ime.context != nil || h.editor.String() != "a你好c" {
+	if !h.ime.dead || h.ime.context != nil || h.editor.String() != "ac" {
 		t.Fatalf("retired cursor send: dead=%t context=%v text=%q", h.ime.dead, h.ime.context, h.editor.String())
 	}
 }

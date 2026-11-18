@@ -229,7 +229,7 @@ func TestNativeIBusFrontend(t *testing.T) {
 								want = text.CompositionResult
 							}
 							if lost && (engine != "hangul" || terminals == 2) {
-								want = text.CompositionCommit
+								want = text.CompositionCancel
 							}
 							if event.CompositionPhase != want {
 								t.Errorf("terminal phase=%d want=%d", event.CompositionPhase, want)
@@ -256,6 +256,12 @@ func TestNativeIBusFrontend(t *testing.T) {
 				if cancelHangulTail {
 					want = "a\uac00c"
 				}
+				if tentative && lost {
+					want = "ac"
+					if engine == "hangul" {
+						want = "a\uac00c" // The prior confirmed syllable survives the lost tail.
+					}
+				}
 				if fcitx && engine == "pinyin" && (ending == "commit" || ending == "pending-focus-out") {
 					want = "a\u4f60\u597dc"
 				}
@@ -269,7 +275,7 @@ func TestNativeIBusFrontend(t *testing.T) {
 				if tentative {
 					if engine == "hangul" {
 						undos := []string{"a가c", "ac", "abc"}
-						if cancelHangulTail {
+						if cancelHangulTail || lost {
 							undos = []string{"ac", "abc"}
 						}
 						for _, want := range undos {
@@ -280,13 +286,13 @@ func TestNativeIBusFrontend(t *testing.T) {
 						return
 					}
 					wantUndo := "abc"
-					if result {
+					if result && !lost {
 						wantUndo = "ac"
 					}
 					if !h.editor.Undo() || h.editor.String() != wantUndo {
 						t.Errorf("first Undo=%q want=%q", h.editor.String(), wantUndo)
 					}
-					if result && (!h.editor.Undo() || h.editor.String() != "abc") {
+					if result && !lost && (!h.editor.Undo() || h.editor.String() != "abc") {
 						t.Errorf("second Undo=%q want abc", h.editor.String())
 					}
 				}

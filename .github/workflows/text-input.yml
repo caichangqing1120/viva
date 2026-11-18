@@ -171,11 +171,11 @@ jobs:
             fi
             xvfb-run -a -s '-screen 0 800x600x24' env VIVA_GTK_SEAT_NATIVE=1 VIVA_GTK_SEAT_REMAP=1 VIVA_GTK_NATIVE_WIDGET_FOCUS=1 VIVA_GTK_ATTACH_NATIVE=1 VIVA_GTK_REGION_NATIVE=1 VIVA_GTK_SAVE_DIALOG_NATIVE=1 VIVA_GTK_IME_NATIVE=1 VIVA_FCITX_ENGINE=pinyin G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN="$tests" sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
           done
-      - name: Fcitx hotkey at GTK editor handoff
+      - name: Fcitx hotkey in GTK single-line fields
         if: runner.os == 'Linux'
         run: |
           for backend in x11 wayland; do
-            xvfb-run -a -s '-screen 0 800x600x24' env VIVA_GTK_FCITX_HANDOFF=1 VIVA_GTK_IME_NATIVE=1 VIVA_FCITX_ENGINE=pinyin G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN='^TestGTKNativeDirectFcitxHotkeyOnFieldHandoff$' sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
+            xvfb-run -a -s '-screen 0 800x600x24' env VIVA_GTK_FCITX_HANDOFF=1 VIVA_GTK_IME_NATIVE=1 VIVA_FCITX_ENGINE=pinyin G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN='^TestGTKNativeDirectFcitxHotkeyOn(FirstField|FieldHandoff)$' sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
           done
       - name: Linux text callback ordering
         if: runner.os == 'Linux'

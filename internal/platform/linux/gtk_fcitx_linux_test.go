@@ -94,6 +94,15 @@ func TestGtkFcitxDeliveryNeverReplaysAnUncertainOrForwardedKey(t *testing.T) {
 }
 
 func TestGTKNativeDirectFcitxHotkeyOnFieldHandoff(t *testing.T) {
+	testGTKNativeDirectFcitxFieldHotkey(t, true)
+}
+
+func TestGTKNativeDirectFcitxHotkeyOnFirstField(t *testing.T) {
+	testGTKNativeDirectFcitxFieldHotkey(t, false)
+}
+
+func testGTKNativeDirectFcitxFieldHotkey(t *testing.T, withDocument bool) {
+	t.Helper()
 	if os.Getenv("VIVA_GTK_FCITX_HANDOFF") != "1" || os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" || os.Getenv("VIVA_IBUS_ENGINE") != "pinyin" {
 		t.Skip("requires the private Fcitx Pinyin handoff fixture")
 	}
@@ -101,12 +110,8 @@ func TestGTKNativeDirectFcitxHotkeyOnFieldHandoff(t *testing.T) {
 	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) {
 		p.asynchronous, p.keyIngress = true, true
 		document, field := text.NewEditor("body"), text.NewEditor("")
-		if !document.EnableTentativeComposition() {
-			t.Fatal("document did not enable tentative composition")
-		}
-		p.install(document)
 		finish := func(failure ...string) {
-			p.record("immediate Fcitx hotkey after field handoff", failure...)
+			p.record("immediate Fcitx hotkey in a single-line field", failure...)
 			p.w.destroy()
 		}
 		probe := &gtkFcitxProbe{p: p}
@@ -122,14 +127,7 @@ func TestGTKNativeDirectFcitxHotkeyOnFieldHandoff(t *testing.T) {
 				probe.later(10*time.Millisecond, func() { await(check, then, description) })
 			}
 		}
-		await(func() bool {
-			engine, err := nativeFcitxCommand("--check", "-n")
-			return err == nil && engine != ""
-		}, func() {
-			if err := selectNativeFcitxEngine("pinyin"); err != nil {
-				finish(err.Error())
-				return
-			}
+		typeQuery := func() {
 			p.installField(field, false)
 			keys := []struct{ symbol, state uint32 }{{' ', gdkControlMask}, {'n', 0}, {'i', 0}, {'h', 0}, {'a', 0}, {'o', 0}, {' ', 0}}
 			// Do not pump GTK between the handoff and the hotkey/typing sequence.
@@ -150,6 +148,25 @@ func TestGTKNativeDirectFcitxHotkeyOnFieldHandoff(t *testing.T) {
 				}
 				finish()
 			}, "the field did not confirm Chinese from the immediate hotkey/typing sequence")
+		}
+		if !withDocument {
+			typeQuery()
+			return
+		}
+		if !document.EnableTentativeComposition() {
+			finish("document did not enable tentative composition")
+			return
+		}
+		p.install(document)
+		await(func() bool {
+			engine, err := nativeFcitxCommand("--check", "-n")
+			return err == nil && engine != ""
+		}, func() {
+			if err := selectNativeFcitxEngine("pinyin"); err != nil {
+				finish(err.Error())
+				return
+			}
+			typeQuery()
 		}, "Fcitx did not focus the initial document")
 	})
 }

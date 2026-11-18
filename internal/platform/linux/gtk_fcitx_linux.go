@@ -50,13 +50,13 @@ func gtkDirectFcitxAllowed(override, module string) bool {
 	return (override == "" || override == "1") && (module == "fcitx" || module == "fcitx5")
 }
 
-func gtkDirectFcitxField(input *platform.TextInput, continuing bool) bool {
+func gtkDirectFcitxField(input *platform.TextInput) bool {
 	if input.Secure || input.Terminal || input.DisableIME {
 		return false
 	}
-	// An existing connection can order the handoff to a single-line editor
-	// without requiring that editor to opt in to tentative composition.
-	return input.State.TentativeComposition || continuing && !input.Multiline &&
+	// Owned single-line editors can use the ordered transport while keeping
+	// legacy composition events, even if the window has no editable document.
+	return input.State.TentativeComposition || !input.Multiline &&
 		input.State.InputOwner != (platform.TextInputOwner{})
 }
 
@@ -64,7 +64,7 @@ func (ime *gtkIME) startDirect() bool {
 	w := ime.w
 	override := os.Getenv("VIVA_GTK_FCITX_DIRECT")
 	if !gtkDirectFcitxAllowed(override, "fcitx") || !ime.directFailure.canTry(w.app.fcitxWatch.owners) || !ime.focused || !w.text.enabled ||
-		!gtkDirectFcitxField(&w.text.input, false) || w.nativeKeys || ime.active {
+		!gtkDirectFcitxField(&w.text.input) || w.nativeKeys || ime.active {
 		return false
 	}
 	ime.realized()
@@ -120,7 +120,7 @@ func (d *gtkDirectFcitx) sync() {
 	}
 	ime, w := d.ime, d.ime.w
 	input := &w.text.input
-	if w.text.enabled && !gtkDirectFcitxField(input, true) {
+	if w.text.enabled && !gtkDirectFcitxField(input) {
 		d.close()
 		ime.sync()
 		return

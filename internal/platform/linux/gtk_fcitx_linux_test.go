@@ -3,11 +3,58 @@
 package linux
 
 import (
+	"os"
+	"os/exec"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/vivaui/viva/internal/fcitx"
+	"github.com/vivaui/viva/text"
 )
+
+func TestGtkDirectFcitxDefaultsToMatchingModule(t *testing.T) {
+	for _, test := range []struct {
+		override, module string
+		want             bool
+	}{
+		{"", "fcitx", true},
+		{"", "fcitx5", true},
+		{"1", "fcitx", true},
+		{"0", "fcitx", false},
+		{"invalid", "fcitx", false},
+		{"", "ibus", false},
+		{"1", "xim", false},
+		{"", "", false},
+	} {
+		if got := gtkDirectFcitxAllowed(test.override, test.module); got != test.want {
+			t.Errorf("override %q module %q: allowed=%t, want %t", test.override, test.module, got, test.want)
+		}
+	}
+}
+
+func TestGtkFcitxCancelsPreeditBeforeUnsentFallback(t *testing.T) {
+	var events []string
+	updates := []fcitx.Update{
+		{Owner: 1, Event: &fcitx.Event{Kind: fcitx.Commit, Text: "confirmed"}},
+		{Owner: 1, Result: &fcitx.Result{Delivery: fcitx.Unknown}},
+		{Owner: 2, Result: &fcitx.Result{Delivery: fcitx.Unsent}},
+		{Owner: 1, Result: &fcitx.Result{Delivery: fcitx.Unsent}},
+		{Owner: 1, Result: &fcitx.Result{Delivery: fcitx.Unsent}},
+	}
+	gtkFcitxDrain(updates, true, func() uint64 { return 1 }, func(event fcitx.Event) {
+		events = append(events, event.Text)
+	}, func() {
+		events = append(events, "cancel")
+	}, func(_ fcitx.Update, fallback bool) {
+		if fallback {
+			events = append(events, "key")
+		}
+	})
+	if want := []string{"confirmed", "cancel", "key", "key"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("fallback ordering = %v, want %v", events, want)
+	}
+}
 
 func TestGtkFcitxDeliveryChecksOwnerAfterEveryEvent(t *testing.T) {
 	owner := uint64(3)
@@ -44,4 +91,90 @@ func TestGtkFcitxDeliveryNeverReplaysAnUncertainOrForwardedKey(t *testing.T) {
 			t.Fatalf("status %v events %v fallback=%t want %t", result.status, result.events, got, result.fallback)
 		}
 	}
+}
+
+func TestGTKNativeDirectFcitxSwitchesModulesDuringPreedit(t *testing.T) {
+	if os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" || os.Getenv("GTK_IM_MODULE") != "" {
+		t.Skip("requires a private Fcitx fixture and an unforced GTK input module")
+	}
+	t.Setenv("VIVA_GTK_FCITX_DIRECT", "")
+	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) {
+		p.asynchronous, p.keyIngress, p.tentative = true, true, true
+		editor := text.NewEditor("abc")
+		editor.MoveTo(3, false)
+		editor.EnableTentativeComposition()
+		p.editor = editor
+		finish := func(failures ...string) {
+			p.record("GTK input module change", failures...)
+			p.w.destroy()
+		}
+		var setString func(*gValue, *byte)
+		var setProperty func(uintptr, *byte, *gValue)
+		g := p.w.g
+		if !g.lookup(&setString, "g_value_set_string") || !g.lookup(&setProperty, "g_object_set_property") {
+			finish("GTK settings setter unavailable")
+			return
+		}
+		settings := g.settingsDefault()
+		setModule := func(name string) {
+			var value gValue
+			g.valueInit(&value, gTypeString)
+			defer g.valueUnset(&value)
+			setString(&value, &cString(name)[0])
+			setProperty(settings, &cString("gtk-im-module")[0], &value)
+		}
+		setModule("fcitx")
+		p.install(editor)
+		if p.w.ime.direct == nil {
+			finish("Fcitx did not start by default")
+			return
+		}
+		probe := &gtkFcitxProbe{p: p}
+		await := func(ready func() bool, then func()) {
+			deadline := time.Now().Add(3 * time.Second)
+			var poll func()
+			poll = func() {
+				if ready() {
+					then()
+				} else if time.Now().After(deadline) {
+					finish("timed out waiting for input method state")
+				} else {
+					probe.later(10*time.Millisecond, poll)
+				}
+			}
+			poll()
+		}
+		await(func() bool {
+			if d := p.w.ime.direct; d != nil {
+				_, pending := d.client.Deadline()
+				return !pending
+			}
+			return false
+		}, func() {
+			for _, args := range [][]string{{"-s", "pinyin"}, {"-o"}} {
+				if out, err := exec.Command("fcitx5-remote", args...).CombinedOutput(); err != nil {
+					finish("could not activate test Fcitx engine: " + string(out))
+					return
+				}
+			}
+			for _, symbol := range []uint32{'n', 'i'} {
+				if err := p.press(p.w.ime.ctx, symbol, 0); err != nil {
+					finish(err.Error())
+					return
+				}
+			}
+			await(func() bool { return editor.String() == "abcni" && editor.CommittedString() == "abc" }, func() {
+				setModule("gtk-im-context-simple")
+				if p.w.ime.direct != nil || editor.TentativeCompositionActive() || editor.String() != "abc" {
+					finish("module change did not cancel and release direct Fcitx")
+					return
+				}
+				if err := p.press(p.w.ime.ctx, 'x', 0); err != nil {
+					finish(err.Error())
+					return
+				}
+				await(func() bool { return editor.CommittedString() == "abcx" }, func() { finish() })
+			})
+		})
+	})
 }

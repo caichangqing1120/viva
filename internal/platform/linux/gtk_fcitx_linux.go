@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,10 +29,15 @@ type gtkDirectFcitx struct {
 	failing       bool
 }
 
+func gtkDirectFcitxAllowed(override, module string) bool {
+	return (override == "" || override == "1") && (module == "fcitx" || module == "fcitx5")
+}
+
 func (ime *gtkIME) startDirect() bool {
 	w := ime.w
-	if ime.directFailed || os.Getenv("VIVA_GTK_FCITX_DIRECT") != "1" || !ime.focused || !w.text.enabled ||
-		w.text.input.Secure || w.text.input.Terminal || w.nativeKeys || !w.text.state.TentativeComposition || ime.active {
+	override := os.Getenv("VIVA_GTK_FCITX_DIRECT")
+	if !gtkDirectFcitxAllowed(override, "fcitx") || ime.directFailed || !ime.focused || !w.text.enabled ||
+		w.text.input.Secure || w.text.input.Terminal || w.text.input.DisableIME || w.nativeKeys || !w.text.state.TentativeComposition || ime.active {
 		return false
 	}
 	ime.realized()
@@ -39,9 +45,7 @@ func (ime *gtkIME) startDirect() bool {
 	if !ime.g.lookup(&contextID, "gtk_im_multicontext_get_context_id") {
 		return false
 	}
-	switch goString(contextID(ime.ctx)) {
-	case "fcitx", "fcitx5":
-	default:
+	if !gtkDirectFcitxAllowed(override, goString(contextID(ime.ctx))) {
 		return false
 	}
 	display := "x11:"
@@ -54,6 +58,7 @@ func (ime *gtkIME) startDirect() bool {
 		return false
 	}
 	ime.direct = &gtkDirectFcitx{ime: ime, client: client, keys: make(map[uint64]gdkEventKey)}
+	w.app.watchDirectFcitxModule(contextID)
 	w.app.rebuildPoll()
 	return true
 }
@@ -67,13 +72,22 @@ func (d *gtkDirectFcitx) current() uint64 {
 	return d.owner
 }
 
+func (d *gtkDirectFcitx) cancelPreedit() {
+	ime := d.ime
+	if d.current() != 0 && ime.session {
+		ime.session, ime.engineComposing = false, false
+		d.hidePopup()
+		ime.apply(platform.TextEvent{Kind: platform.TextCancelComposition, CompositionPhase: text.CompositionCancel})
+	}
+}
+
 func (d *gtkDirectFcitx) sync() {
 	if d.failing {
 		return
 	}
 	ime, w := d.ime, d.ime.w
 	input := &w.text.input
-	if w.text.enabled && (input.Secure || input.Terminal || !input.State.TentativeComposition) {
+	if w.text.enabled && (input.Secure || input.Terminal || input.DisableIME || !input.State.TentativeComposition) {
 		d.close()
 		ime.sync()
 		return
@@ -102,6 +116,18 @@ func (d *gtkDirectFcitx) sync() {
 	d.updateCaret()
 	d.placePopup()
 	d.arm()
+}
+
+var errGtkFcitxModuleChanged = errors.New("linux: GTK input module changed")
+
+func (d *gtkDirectFcitx) refreshModule(contextID func(uintptr) uintptr) {
+	ime := d.ime
+	// The getter reports the last GTK context. Reattach its window so GTK
+	// resolves the newly selected module before we inspect it.
+	ime.realized()
+	if ime.direct == d && !gtkDirectFcitxAllowed(os.Getenv("VIVA_GTK_FCITX_DIRECT"), goString(contextID(ime.ctx))) {
+		d.receive(errGtkFcitxModuleChanged)
+	}
 }
 
 func (d *gtkDirectFcitx) suspend() {
@@ -186,6 +212,22 @@ func gtkFcitxDeliver(update fcitx.Update, current func() uint64, deliver func(fc
 	return owned() && !consumed && (update.Result.Delivery == fcitx.Declined || update.Result.Delivery == fcitx.Unsent)
 }
 
+func gtkFcitxDrain(updates []fcitx.Update, disconnected bool, current func() uint64, deliver func(fcitx.Event), cancel func(), resolve func(fcitx.Update, bool)) {
+	for _, update := range updates {
+		fallback := gtkFcitxDeliver(update, current, deliver)
+		if disconnected && fallback && cancel != nil {
+			// Resolve the old composition before the first unfiltered input.
+			cancel()
+			cancel = nil
+			fallback = current() == update.Owner
+		}
+		resolve(update, fallback)
+	}
+	if disconnected && cancel != nil {
+		cancel()
+	}
+}
+
 func (d *gtkDirectFcitx) receive(err error) {
 	if d.ime.direct != d || d.failing {
 		return
@@ -194,28 +236,22 @@ func (d *gtkDirectFcitx) receive(err error) {
 		d.failing = true
 		d.client.Close()
 	}
-	for _, update := range d.client.Updates() {
-		var key gdkEventKey
-		var found bool
+	gtkFcitxDrain(d.client.Updates(), err != nil, d.current, d.event, d.cancelPreedit, func(update fcitx.Update, fallback bool) {
 		if update.Result != nil {
-			key, found = d.keys[update.Result.Key.Tag]
+			key, found := d.keys[update.Result.Key.Tag]
 			delete(d.keys, update.Result.Key.Tag)
+			if fallback && found {
+				d.ime.w.routeKey(&key, 0, false)
+			}
 		}
-		if gtkFcitxDeliver(update, d.current, d.event) && found {
-			d.ime.w.routeKey(&key, 0, false)
-		}
-	}
+	})
 	if err == nil {
 		d.arm()
 		return
 	}
 	ime := d.ime
-	owned, live := d.current() != 0, ime.session
 	ime.directFailed = true
 	d.close()
-	if owned && live {
-		ime.apply(platform.TextEvent{Kind: platform.TextCancelComposition, CompositionPhase: text.CompositionCancel})
-	}
 	ime.sync()
 }
 

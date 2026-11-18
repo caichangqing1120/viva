@@ -575,7 +575,7 @@ func gtkWindowByID(id uintptr) *gtkWindow {
 }
 
 func gtkIMEByContext(context, id uintptr) *gtkIME {
-	if w := gtkWindowByID(id); w != nil && w.ime != nil && w.ime.current(context) {
+	if w := gtkWindowByID(id); w != nil && w.ime != nil && w.ime.direct == nil && w.ime.current(context) {
 		return w.ime
 	}
 	return nil

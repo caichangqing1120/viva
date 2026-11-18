@@ -45,6 +45,7 @@ func TestGTKNativeFcitxDeclinedShortcut(t *testing.T) {
 
 func testGTKNativeFcitx(t *testing.T, firstMode, modes int, endings ...string) {
 	t.Helper()
+	t.Setenv("VIVA_GTK_FCITX_DIRECT", "0") // This probe exercises GtkIMContext itself.
 	if os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" {
 		t.Skip("native Fcitx GTK probe requires the private Fcitx fixture")
 	}
@@ -70,6 +71,7 @@ func testGTKNativeFcitx(t *testing.T, firstMode, modes int, endings ...string) {
 }
 
 func TestGTKNativeFcitxWindowClose(t *testing.T) {
+	t.Setenv("VIVA_GTK_FCITX_DIRECT", "0")
 	if os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" {
 		t.Skip("native Fcitx close probe requires the private Fcitx fixture")
 	}

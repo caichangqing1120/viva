@@ -16,11 +16,43 @@ type gtkFcitxWatch struct {
 	ids       [2]uint32
 	present   uintptr
 	checked   bool
+	settings  uintptr
+	moduleID  uint64
 }
 
 var gtkFcitxCallbacks struct {
 	sync.Once
 	appeared, vanished uintptr
+}
+
+var gtkDirectFcitxModuleOnce sync.Once
+var gtkDirectFcitxModuleChanged uintptr
+
+func (a *gtkApplication) watchDirectFcitxModule(contextID func(uintptr) uintptr) {
+	watch := &a.fcitxWatch
+	if watch.moduleID != 0 {
+		return
+	}
+	watch.settings = a.g.settingsDefault()
+	if watch.settings == 0 {
+		return
+	}
+	watch.contextID, watch.checked = contextID, true
+	gtkDirectFcitxModuleOnce.Do(func() {
+		gtkDirectFcitxModuleChanged = purego.NewCallback(func(_, _, _ uintptr) uintptr {
+			if app := gtkRunning.Load(); app != nil && !app.stopping {
+				for _, w := range app.windows {
+					if !w.closed && w.ime != nil && w.ime.direct != nil && !w.ime.direct.failing {
+						w.ime.direct.refreshModule(app.fcitxWatch.contextID)
+					}
+				}
+			}
+			return 0
+		})
+	})
+	// GtkIMMulticontext invalidates its global context ID in a notify handler.
+	// Read the effective context only after GTK has handled the notification.
+	watch.moduleID = a.g.signalConnect(watch.settings, &cString("notify::gtk-im-module")[0], gtkDirectFcitxModuleChanged, 0, 0, 1)
 }
 
 func (a *gtkApplication) watchFcitx(ime *gtkIME) {
@@ -71,6 +103,9 @@ func (watch *gtkFcitxWatch) matches(ime *gtkIME) bool {
 }
 
 func (a *gtkApplication) closeFcitxWatch() {
+	if watch := &a.fcitxWatch; watch.moduleID != 0 {
+		a.g.signalDisc(watch.settings, watch.moduleID)
+	}
 	for _, id := range a.fcitxWatch.ids {
 		if id != 0 {
 			a.fcitxWatch.unwatch(id)

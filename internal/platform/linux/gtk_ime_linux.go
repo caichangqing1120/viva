@@ -181,7 +181,7 @@ func (ime *gtkIME) sync() {
 	if ime.ctx == 0 || ime.w.closed {
 		return
 	}
-	if ime.direct != nil || ime.startDirect() {
+	if ime.direct != nil {
 		ime.direct.sync()
 		return
 	}
@@ -207,6 +207,10 @@ func (ime *gtkIME) sync() {
 	want := ime.focused && text.enabled && !ime.w.nativeKeys
 	switch {
 	case want && !ime.active:
+		if ime.startDirect() {
+			ime.direct.sync()
+			return
+		}
 		ime.realized()
 		if ime.ctx != context || ime.w.closed {
 			return

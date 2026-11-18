@@ -149,6 +149,7 @@ type gtkLibrary struct {
 	// GDK.
 	gdkDisplayDefault    func() uintptr
 	gdkDisplayPrimary    func(display uintptr) uintptr
+	gdkDisplayMonitor    func(display uintptr, index int32) uintptr
 	gdkMonitorScale      func(monitor uintptr) int32
 	gdkMonitorWidthMM    func(monitor uintptr) int32
 	gdkMonitorHeightMM   func(monitor uintptr) int32
@@ -444,6 +445,7 @@ func (g *gtkLibrary) bindAll() {
 
 	b(&g.gdkDisplayDefault, "gdk_display_get_default")
 	b(&g.gdkDisplayPrimary, "gdk_display_get_primary_monitor")
+	b(&g.gdkDisplayMonitor, "gdk_display_get_monitor")
 	b(&g.gdkMonitorScale, "gdk_monitor_get_scale_factor")
 	b(&g.gdkMonitorWidthMM, "gdk_monitor_get_width_mm")
 	b(&g.gdkMonitorHeightMM, "gdk_monitor_get_height_mm")

@@ -522,7 +522,38 @@ func (w *gtkWindow) setMinimumSize() {
 		MinWidth:  int32(math.Ceil(float64(float32(w.config.MinWidth) * w.ratio))),
 		MinHeight: int32(math.Ceil(float64(float32(w.config.MinHeight) * w.ratio))),
 	}
+	if w.app.wayland {
+		// GTK can apply the cached normal minimum on the first maximized
+		// configure, before the state change clears it.
+		var output [4]int32
+		if monitor := w.waylandSizingMonitor(); monitor != 0 {
+			w.g.gdkMonitorGeometry(monitor, &output)
+		}
+		if output[2] > 0 {
+			geometry.MinWidth = min(geometry.MinWidth, output[2])
+		}
+		if output[3] > 0 {
+			geometry.MinHeight = min(geometry.MinHeight, output[3])
+		}
+	}
 	w.g.windowSetGeometry(w.toplevel, 0, &geometry, gdkHintMinSize)
+}
+
+func (w *gtkWindow) waylandSizingMonitor() uintptr {
+	g := w.g
+	display := g.gdkDisplayDefault()
+	if display == 0 {
+		return 0
+	}
+	if window := g.widgetGetWindow(w.toplevel); window != 0 {
+		if monitor := g.gdkDisplayMonitorAt(display, window); monitor != 0 {
+			return monitor
+		}
+	}
+	if monitor := g.gdkDisplayPrimary(display); monitor != 0 {
+		return monitor
+	}
+	return g.gdkDisplayMonitor(display, 0)
 }
 
 // allocated is the drawing area getting a size: the window was shown, resized or rescaled.

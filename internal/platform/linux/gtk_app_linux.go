@@ -55,6 +55,7 @@ type gtkApplication struct {
 	watched map[int]uint32
 	// Retired input contexts stay alive until the native callback stack returns.
 	retiredIMESources []uint32
+	fcitxWatch        gtkFcitxWatch
 }
 
 // gtkTasks are the functions other goroutines asked the loop to run.
@@ -101,6 +102,7 @@ func RunGTKApplication(start platform.ApplicationStart) error {
 	}
 	defer gtkRunning.Store(nil)
 	defer application.releaseRetiredIME()
+	defer application.closeFcitxWatch()
 	callbacks()
 	application.mainThread = syscall.Gettid()
 	application.installHooks()

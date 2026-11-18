@@ -1,0 +1,120 @@
+//go:build linux && vivagtk
+
+package linux
+
+import (
+	"sync"
+
+	"github.com/ebitengine/purego"
+	"github.com/vivaui/viva/internal/platform"
+	"github.com/vivaui/viva/text"
+)
+
+type gtkFcitxWatch struct {
+	contextID func(uintptr) uintptr
+	unwatch   func(uint32)
+	ids       [2]uint32
+	present   uintptr
+	checked   bool
+}
+
+var gtkFcitxCallbacks struct {
+	sync.Once
+	appeared, vanished uintptr
+}
+
+func (a *gtkApplication) watchFcitx(ime *gtkIME) {
+	state := &a.fcitxWatch
+	if state.ids != [2]uint32{} {
+		return
+	}
+	if !state.checked {
+		state.checked = true
+		a.g.lookup(&state.contextID, "gtk_im_multicontext_get_context_id")
+	}
+	if !state.matches(ime) {
+		return
+	}
+	var watch func(bus int32, name *byte, flags uint32, appeared, vanished, data, destroy uintptr) uint32
+	if !a.g.lookup(&watch, "g_bus_watch_name") || !a.g.lookup(&state.unwatch, "g_bus_unwatch_name") {
+		state.contextID = nil
+		return
+	}
+	gtkFcitxCallbacks.Do(func() {
+		gtkFcitxCallbacks.appeared = purego.NewCallback(func(_, _, _, bit uintptr) {
+			if app := gtkRunning.Load(); app != nil {
+				app.fcitxWatch.present |= bit
+			}
+		})
+		gtkFcitxCallbacks.vanished = purego.NewCallback(func(_, _, bit uintptr) {
+			if app := gtkRunning.Load(); app != nil {
+				app.fcitxVanished(bit)
+			}
+		})
+	})
+	// The GTK module can use the main or portal service. Do not activate either.
+	const sessionBus = 2 // G_BUS_TYPE_SESSION
+	for index, name := range [...]string{"org.fcitx.Fcitx5", "org.freedesktop.portal.Fcitx"} {
+		state.ids[index] = watch(sessionBus, &cString(name)[0], 0, gtkFcitxCallbacks.appeared, gtkFcitxCallbacks.vanished, 1<<index, 0)
+	}
+}
+
+func (watch *gtkFcitxWatch) matches(ime *gtkIME) bool {
+	if watch.contextID == nil || ime.ctx == 0 {
+		return false
+	}
+	switch goString(watch.contextID(ime.ctx)) {
+	case "fcitx", "fcitx5":
+		return true
+	}
+	return false
+}
+
+func (a *gtkApplication) closeFcitxWatch() {
+	for _, id := range a.fcitxWatch.ids {
+		if id != 0 {
+			a.fcitxWatch.unwatch(id)
+		}
+	}
+	a.fcitxWatch = gtkFcitxWatch{}
+}
+
+func (a *gtkApplication) fcitxVanished(bit uintptr) {
+	watch := &a.fcitxWatch
+	wasPresent := watch.present
+	watch.present &^= bit
+	if wasPresent == 0 || watch.present != 0 || a.stopping {
+		return
+	}
+	// A cancellation can call back into the app and replace another window's context.
+	type target struct {
+		ime     *gtkIME
+		context uintptr
+	}
+	var affected []target
+	for _, window := range a.windows {
+		if ime := window.ime; ime != nil && ime.tentative && ime.session && ime.current(ime.ctx) && watch.matches(ime) {
+			affected = append(affected, target{ime, ime.ctx})
+		}
+	}
+	for _, target := range affected {
+		target.ime.serviceLost(target.context)
+	}
+}
+
+func (ime *gtkIME) serviceLost(context uintptr) {
+	if !ime.tentative || !ime.session || !ime.current(context) {
+		return
+	}
+	w, revision := ime.w, ime.w.text.stateRevision
+	// Retire first: GTK can relay an old result while it gives up focus.
+	ime.close()
+	if !w.app.stopping && !w.closed && w.ime == ime && ime.ctx == 0 && w.text.enabled &&
+		w.text.stateRevision == revision && ime.sameOwner(&w.text.input) {
+		ime.apply(platform.TextEvent{Kind: platform.TextCancelComposition, CompositionPhase: text.CompositionCancel})
+	}
+	if !w.app.stopping && !w.closed && w.ime == ime && ime.ctx == 0 {
+		ime.open()
+		ime.sync()
+	}
+}

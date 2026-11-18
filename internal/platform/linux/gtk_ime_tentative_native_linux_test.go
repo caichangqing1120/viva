@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 	"github.com/vivaui/viva/gfx"
@@ -818,6 +819,38 @@ func TestGTKNativeSameTargetOwnership(t *testing.T) {
 
 func TestGTKNativeTentativeEndOrdering(t *testing.T) {
 	testGTKNativeTentativeProbe(t, 5, (*gtkTentativeProbe).endOrdering)
+}
+
+func TestGTKNativeTentativeServiceLossRetiresPreedit(t *testing.T) {
+	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) {
+		if err := p.beginEndTrial(); err != nil {
+			p.record("service loss", err.Error())
+			return
+		}
+		a, ime := p.w.app, p.w.ime
+		context := p.keys.ref(ime.ctx)
+		defer p.w.g.objectUnref(context)
+		// Drive a service transition separately from the real daemon integration probe.
+		module := cString("fcitx")
+		a.fcitxWatch.contextID = func(uintptr) uintptr { return uintptr(unsafe.Pointer(&module[0])) }
+		a.fcitxWatch.present = 3
+		a.fcitxVanished(1)
+		var failures []string
+		if ime.ctx != context || p.editor.String() != "au3A9c" {
+			failures = append(failures, "preedit cleared while the other service was still present")
+		}
+		a.fcitxVanished(2)
+		signal, stale := cString("commit"), cString("stale")
+		p.keys.emit(context, &signal[0], &stale[0])
+		if ime.ctx == 0 || ime.ctx == context || p.editor.String() != "ac" || ime.composing() {
+			failures = append(failures, fmt.Sprintf("service loss left a stale context or text: %q", p.editor.String()))
+		}
+		p.composingTrial = false
+		if err := p.press(ime.ctx, 'x', 0); err != nil || p.editor.String() != "axc" {
+			failures = append(failures, fmt.Sprintf("first key after service loss: text=%q, err=%v", p.editor.String(), err))
+		}
+		p.record("service loss", failures...)
+	})
 }
 
 func TestGTKNativeTentativeCallbackHandoff(t *testing.T) {

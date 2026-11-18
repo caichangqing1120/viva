@@ -207,6 +207,9 @@ func (ime *gtkIME) sync() {
 		}
 		ime.active, ime.haveCursor, ime.hasSources, ime.sent = true, false, false, false
 		ime.callContext(context, ime.g.imFocusIn)
+		if ime.tentative && ime.current(context) {
+			ime.w.app.watchFcitx(ime)
+		}
 	case !want && ime.active:
 		ime.active = false
 		if ime.engineComposing || ime.tentative && ime.session {
@@ -341,6 +344,7 @@ func (ime *gtkIME) preeditStarted() {
 	ime.finishPreedit(context)
 	if ime.current(context) {
 		ime.session, ime.engineComposing = true, true
+		ime.w.app.watchFcitx(ime)
 	}
 }
 

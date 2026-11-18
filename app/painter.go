@@ -357,6 +357,13 @@ func (painter *painter) pointerEvent(event platform.PointerEvent) (platform.Fram
 		}
 		return platform.Frame{}, nil
 	}
+	if painter.coalesceInput && painter.scheduleFrame != nil && painter.focus.Focused() != beforeFocus {
+		// The platform can receive a key before the deferred paint runs.
+		// Publish the new text owner now, using the last paint's hit geometry.
+		input := painter.syncTextInput()
+		painter.scheduleFrame(0)
+		return platform.Frame{TextInput: input}, nil
+	}
 	return painter.repaintAfterInput()
 }
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/internal/platform"
+	"github.com/vivaui/viva/text"
 )
 
 // A frame's interval is measured from the start of its paint, so a slow paint
@@ -179,5 +180,53 @@ func TestCoalescedPointerEventLeavesThePaintToTheFrameClock(t *testing.T) {
 	}
 	if got := painter.canvas.Hovered(); got != gfx.Item(1) {
 		t.Fatalf("painted hover = %v, want the declared control", got)
+	}
+}
+
+func TestCoalescedPointerFocusPublishesTextInputBeforeTheNextKey(t *testing.T) {
+	leftID, rightID := gfx.Item(21), gfx.Item(22)
+	left, right := text.NewEditor("left"), text.NewEditor("right")
+	config := Config{Title: "coalesced text focus", Width: 240, Height: 100}
+	config.Paint = func(canvas *gfx.Canvas, _ gfx.Size) {
+		canvas.HitWithOptions(leftID, gfx.Rect{Width: 100, Height: 50}, "Left", gfx.HitOptions{Role: gfx.RoleTextField, Autofocus: true})
+		canvas.HitWithOptions(rightID, gfx.Rect{X: 120, Width: 100, Height: 50}, "Right", gfx.HitOptions{Role: gfx.RoleTextField})
+	}
+	config.TextInput = func(context TextInputContext) *TextInput {
+		editor := left
+		if context.ID == rightID {
+			editor = right
+		}
+		return &TextInput{Editor: editor, Bounds: context.Bounds, FontSize: 13}
+	}
+	var canvas gfx.Canvas
+	painter := newTestPainter(t, &canvas, config)
+	painter.coalesceInput = true
+	requests := 0
+	painter.scheduleFrame = func(time.Duration) { requests++ }
+
+	for _, step := range []struct {
+		x      float32
+		id     gfx.ID
+		editor *text.Editor
+	}{{150, rightID, right}, {20, leftID, left}, {230, gfx.ID{}, nil}} {
+		frame, err := painter.pointerEvent(platform.PointerEvent{Kind: platform.PointerDown, Button: gfx.PointerButtonPrimary, X: step.x, Y: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !frame.TextInput.Changed || painter.activeEditor != step.editor || (frame.TextInput.Input == nil) != (step.editor == nil) {
+			t.Fatalf("focus %v returned stale text input before next key: %+v, editor=%p", step.id, frame.TextInput, painter.activeEditor)
+		}
+		if frame.TextInput.Input != nil && frame.TextInput.Input.Target != step.id {
+			t.Fatalf("text input target = %v, want %v", frame.TextInput.Input.Target, step.id)
+		}
+		if !frame.Update.Empty() || frame.TextLabels != nil || frame.Accessibility != nil {
+			t.Fatal("focus notification forced a visual frame")
+		}
+		if _, err := painter.pointerEvent(platform.PointerEvent{Kind: platform.PointerUp, Button: gfx.PointerButtonPrimary, X: step.x, Y: 20}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if requests < 3 {
+		t.Fatalf("frame requests = %d, want a scheduled repaint after each handoff", requests)
 	}
 }

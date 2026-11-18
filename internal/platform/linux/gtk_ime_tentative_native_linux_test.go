@@ -822,35 +822,58 @@ func TestGTKNativeTentativeEndOrdering(t *testing.T) {
 }
 
 func TestGTKNativeTentativeServiceLossRetiresPreedit(t *testing.T) {
-	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) {
-		if err := p.beginEndTrial(); err != nil {
-			p.record("service loss", err.Error())
-			return
-		}
-		a, ime := p.w.app, p.w.ime
-		context := p.keys.ref(ime.ctx)
-		defer p.w.g.objectUnref(context)
-		// Drive a service transition separately from the real daemon integration probe.
-		module := cString("fcitx")
-		a.fcitxWatch.contextID = func(uintptr) uintptr { return uintptr(unsafe.Pointer(&module[0])) }
-		a.fcitxWatch.present = 3
-		a.fcitxVanished(1)
-		var failures []string
-		if ime.ctx != context || p.editor.String() != "au3A9c" {
-			failures = append(failures, "preedit cleared while the other service was still present")
-		}
-		a.fcitxVanished(2)
-		signal, stale := cString("commit"), cString("stale")
-		p.keys.emit(context, &signal[0], &stale[0])
-		if ime.ctx == 0 || ime.ctx == context || p.editor.String() != "ac" || ime.composing() {
-			failures = append(failures, fmt.Sprintf("service loss left a stale context or text: %q", p.editor.String()))
-		}
-		p.composingTrial = false
-		if err := p.press(ime.ctx, 'x', 0); err != nil || p.editor.String() != "axc" {
-			failures = append(failures, fmt.Sprintf("first key after service loss: text=%q, err=%v", p.editor.String(), err))
-		}
-		p.record("service loss", failures...)
-	})
+	for _, trial := range []struct {
+		name      string
+		tentative bool
+	}{{"document", true}, {"ordinary field", false}} {
+		t.Run(trial.name, func(t *testing.T) {
+			testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) {
+				p.tentative, p.composingTrial = trial.tentative, trial.tentative
+				editor := text.NewEditor("abc")
+				editor.SetSelection(text.Range{Start: 1, End: 2})
+				if trial.tentative && !editor.EnableTentativeComposition() {
+					p.install(editor)
+					p.record("service loss", "enable refused")
+					return
+				}
+				p.install(editor)
+				if err := p.compose(); err != nil {
+					p.record("service loss", err.Error())
+					return
+				}
+				a, ime := p.w.app, p.w.ime
+				context := p.keys.ref(ime.ctx)
+				defer p.w.g.objectUnref(context)
+				// Drive a service transition separately from the real daemon integration probe.
+				module := cString("fcitx")
+				a.fcitxWatch.contextID = func(uintptr) uintptr { return uintptr(unsafe.Pointer(&module[0])) }
+				a.fcitxWatch.present = 3
+				a.fcitxVanished(1)
+				var failures []string
+				if ime.ctx != context || p.editor.String() != "au3A9c" {
+					failures = append(failures, "preedit cleared while the other service was still present")
+				}
+				a.fcitxVanished(2)
+				signal, stale := cString("commit"), cString("stale")
+				p.keys.emit(context, &signal[0], &stale[0])
+				want := "ac"
+				if !trial.tentative {
+					want = "abc"
+					if selection := p.editor.Selection(); selection != (text.Range{Start: 1, End: 2}) {
+						failures = append(failures, fmt.Sprintf("legacy selection after service loss: %v", selection))
+					}
+				}
+				if ime.ctx == 0 || ime.ctx == context || p.editor.String() != want || ime.composing() {
+					failures = append(failures, fmt.Sprintf("service loss left a stale context or text: %q", p.editor.String()))
+				}
+				p.composingTrial = false
+				if err := p.press(ime.ctx, 'x', 0); err != nil || p.editor.String() != "axc" {
+					failures = append(failures, fmt.Sprintf("first key after service loss: text=%q, err=%v", p.editor.String(), err))
+				}
+				p.record("service loss", failures...)
+			})
+		})
+	}
 }
 
 func TestGTKNativeTentativeCallbackHandoff(t *testing.T) {

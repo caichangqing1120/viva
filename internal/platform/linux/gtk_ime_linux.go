@@ -217,7 +217,7 @@ func (ime *gtkIME) sync() {
 		}
 		ime.active, ime.haveCursor, ime.hasSources, ime.sent = true, false, false, false
 		ime.callContext(context, ime.g.imFocusIn)
-		if ime.tentative && ime.current(context) {
+		if ime.current(context) {
 			ime.w.app.watchFcitx(ime)
 		}
 	case !want && ime.active:

@@ -133,7 +133,7 @@ func (a *gtkApplication) fcitxVanished(bit uintptr) {
 	}
 	var affected []target
 	for _, window := range a.windows {
-		if ime := window.ime; ime != nil && ime.direct == nil && ime.tentative && ime.session && ime.current(ime.ctx) && watch.matches(ime) {
+		if ime := window.ime; ime != nil && ime.direct == nil && ime.ownsServicePreedit(ime.ctx) && watch.matches(ime) {
 			affected = append(affected, target{ime, ime.ctx})
 		}
 	}
@@ -142,16 +142,30 @@ func (a *gtkApplication) fcitxVanished(bit uintptr) {
 	}
 }
 
+func (ime *gtkIME) ownsServicePreedit(context uintptr) bool {
+	if !ime.current(context) {
+		return false
+	}
+	if ime.tentative {
+		return ime.session
+	}
+	return ime.engineComposing && ime.w.text.state.Composing
+}
+
 func (ime *gtkIME) serviceLost(context uintptr) {
-	if !ime.tentative || !ime.session || !ime.current(context) {
+	if !ime.ownsServicePreedit(context) {
 		return
 	}
 	w, revision := ime.w, ime.w.text.stateRevision
+	event := platform.TextEvent{Kind: platform.TextCancelComposition}
+	if ime.tentative {
+		event.CompositionPhase = text.CompositionCancel
+	}
 	// Retire first: GTK can relay an old result while it gives up focus.
 	ime.close()
 	if !w.app.stopping && !w.closed && w.ime == ime && ime.ctx == 0 && w.text.enabled &&
 		w.text.stateRevision == revision && ime.sameOwner(&w.text.input) {
-		ime.apply(platform.TextEvent{Kind: platform.TextCancelComposition, CompositionPhase: text.CompositionCancel})
+		ime.apply(event)
 	}
 	if !w.app.stopping && !w.closed && w.ime == ime && ime.ctx == 0 {
 		ime.open()

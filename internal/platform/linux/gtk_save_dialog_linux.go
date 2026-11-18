@@ -62,20 +62,13 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 	if dialog == 0 {
 		return "", false, fmt.Errorf("linux: could not create a GTK save file dialog")
 	}
-	a.saveDialogOwner = parent
-	var suspended *gtkIME
-	var suspendedDirect *gtkDirectFcitx
+	var resumeInput func()
 	defer func() {
 		api.destroy(dialog)
 		a.g.objectUnref(dialog)
 		a.dismissSaveDialog = nil
-		a.saveDialogOwner = nil
-		if suspended != nil && !a.stopping && !parent.closed && parent.ime == suspended && suspended.ctx == 0 {
-			suspended.open()
-			suspended.sync()
-		}
-		if suspendedDirect != nil && !a.stopping && !parent.closed && parent.ime == suspendedDirect.ime && parent.ime.direct == suspendedDirect {
-			suspendedDirect.sync()
+		if resumeInput != nil {
+			resumeInput()
 		}
 	}()
 	api.modal(dialog, 1)
@@ -90,6 +83,66 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 			api.pattern(ptr, &cString(pattern)[0])
 		}
 		api.addFilter(dialog, ptr) // The chooser takes ownership.
+	}
+	var err error
+	resumeInput, err = a.suspendSaveInput(parent)
+	if err != nil {
+		return "", false, err
+	}
+	if parent.closed || a.stopping {
+		return "", true, nil
+	}
+	a.dismissSaveDialog = func() { api.hide(dialog) }
+	if api.run(dialog) != acceptResponse || parent.closed || a.stopping {
+		return "", true, nil
+	}
+	path := api.filename(dialog)
+	if path == 0 {
+		return "", false, fmt.Errorf("linux: GTK save file dialog returned no local path")
+	}
+	defer a.g.gFree(path)
+	return goString(path), false, nil
+}
+
+func (a *gtkApplication) preparePortalSave() (func(), error) {
+	if a.mainThread != syscall.Gettid() || !a.wayland || a.stopping || a.active == nil || a.active.closed || a.active.destroying {
+		return nil, nil
+	}
+	if a.saveDialogOwner != nil {
+		return nil, fmt.Errorf("linux: a save file dialog is already open")
+	}
+	parent := a.active
+	if parent.ime == nil || !parent.ime.composing() {
+		return nil, nil
+	}
+	resume, err := a.suspendSaveInput(parent)
+	if err == nil {
+		// Send the old candidate surface's removal to the compositor before the
+		// external chooser maps its window and takes keyboard focus.
+		var syncDisplay func(uintptr)
+		if display := a.g.gdkDisplayDefault(); display != 0 && a.g.lookup(&syncDisplay, "gdk_display_sync") {
+			syncDisplay(display)
+		}
+	}
+	return resume, err
+}
+
+func (a *gtkApplication) suspendSaveInput(parent *gtkWindow) (func(), error) {
+	a.saveDialogOwner = parent
+	var suspended *gtkIME
+	var suspendedDirect *gtkDirectFcitx
+	resume := func() {
+		a.saveDialogOwner = nil
+		if a.stopping || parent.closed {
+			return
+		}
+		if suspended != nil && parent.ime == suspended && suspended.ctx == 0 {
+			suspended.open()
+			suspended.sync()
+		}
+		if suspendedDirect != nil && parent.ime == suspendedDirect.ime && parent.ime.direct == suspendedDirect {
+			suspendedDirect.sync()
+		}
 	}
 	// Drop the editor's active context before GTK focuses the dialog. A native
 	// focus-out can otherwise submit stale preedit or leave its popup mapped.
@@ -109,22 +162,10 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 			}
 			frame, err := parent.text.textEvent(event)
 			if err != nil {
-				return "", false, err
+				return resume, err
 			}
 			parent.present(frame, nil)
 		}
 	}
-	if parent.closed || a.stopping {
-		return "", true, nil
-	}
-	a.dismissSaveDialog = func() { api.hide(dialog) }
-	if api.run(dialog) != acceptResponse || parent.closed || a.stopping {
-		return "", true, nil
-	}
-	path := api.filename(dialog)
-	if path == 0 {
-		return "", false, fmt.Errorf("linux: GTK save file dialog returned no local path")
-	}
-	defer a.g.gFree(path)
-	return goString(path), false, nil
+	return resume, nil
 }

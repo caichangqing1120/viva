@@ -44,6 +44,8 @@ func TestGTKNativeSaveDialogResumesEditingAfterPreedit(t *testing.T) {
 	if os.Getenv("VIVA_GTK_SAVE_DIALOG_NATIVE") != "1" {
 		t.Skip("requires a private Wayland compositor")
 	}
+	// This test checks retirement of a GtkIMContext, not direct Fcitx suspension.
+	t.Setenv("VIVA_GTK_FCITX_DIRECT", "0")
 	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) {
 		w, a := p.w, p.w.app
 		p.tentative = true
@@ -78,5 +80,47 @@ func TestGTKNativeSaveDialogResumesEditingAfterPreedit(t *testing.T) {
 			failures = append(failures, fmt.Sprintf("dialog changed source or history: text=%q", editor.String()))
 		}
 		p.record("save with preedit", failures...)
+	})
+}
+
+func TestGTKNativeSaveDialogSuspendsPreeditForPortal(t *testing.T) {
+	if os.Getenv("VIVA_GTK_SAVE_DIALOG_NATIVE") != "1" {
+		t.Skip("requires a private Wayland compositor")
+	}
+	t.Setenv("VIVA_GTK_FCITX_DIRECT", "0")
+	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) {
+		w, a := p.w, p.w.app
+		p.tentative = true
+		editor := text.NewEditor("abc")
+		editor.EnableTentativeComposition()
+		p.install(editor)
+		p.emit("preedit-start", "")
+		w.ime.apply(platform.TextEvent{Kind: platform.TextSetMarked, CompositionPhase: text.CompositionUpdate, Text: "ni"})
+		if !editor.CompositionActive() {
+			p.record("portal save with preedit", "preedit fixture was not active")
+			return
+		}
+		context := p.keys.ref(w.ime.ctx)
+		defer w.g.objectUnref(context)
+		a.active = w
+		resume, err := a.preparePortalSave()
+		if err != nil || resume == nil {
+			p.record("portal save with preedit", fmt.Sprintf("portal input was not suspended: %v", err))
+			return
+		}
+		var failures []string
+		if w.ime.ctx != 0 || a.saveDialogOwner != w || editor.CompositionActive() || editor.String() != "abc" {
+			failures = append(failures, "portal request would expose the old input context or composition")
+		}
+		resume()
+		if w.ime.ctx == 0 || w.ime.ctx == context || a.saveDialogOwner != nil {
+			failures = append(failures, "portal return did not release the modal owner and recreate input")
+		}
+		signal, stale := cString("commit"), cString("stale")
+		p.keys.emit(context, &signal[0], &stale[0])
+		if editor.String() != "abc" || editor.CanUndo() || editor.CompositionActive() {
+			failures = append(failures, "a retired context changed document text or history")
+		}
+		p.record("portal save with preedit", failures...)
 	})
 }

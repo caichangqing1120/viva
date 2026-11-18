@@ -119,7 +119,8 @@ func (a *gtkApplication) onMain(function func()) error {
 // installHooks makes the desktop services the shell's.
 func (a *gtkApplication) installHooks() {
 	hooks := &desktopHooks{
-		saveFileDialog: a.saveFileDialog,
+		saveFileDialog:    a.saveFileDialog,
+		preparePortalSave: a.preparePortalSave,
 		clipboardText: func() (value string, err error) {
 			err = a.onMain(func() { value, err = a.readText(false) })
 			return

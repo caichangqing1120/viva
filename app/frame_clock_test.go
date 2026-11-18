@@ -230,3 +230,42 @@ func TestCoalescedPointerFocusPublishesTextInputBeforeTheNextKey(t *testing.T) {
 		t.Fatalf("frame requests = %d, want a scheduled repaint after each handoff", requests)
 	}
 }
+
+func TestCoalescedClickFocusRequestPublishesTheNewEditorOnRelease(t *testing.T) {
+	leftID, rightID, buttonID := gfx.Item(21), gfx.Item(22), gfx.Item(23)
+	left, right := text.NewEditor("left"), text.NewEditor("right")
+	config := Config{Title: "coalesced click focus", Width: 240, Height: 100}
+	config.Paint = func(canvas *gfx.Canvas, _ gfx.Size) {
+		canvas.HitWithOptions(leftID, gfx.Rect{Width: 100, Height: 50}, "Left", gfx.HitOptions{Role: gfx.RoleTextField, Autofocus: true})
+		canvas.HitWithOptions(rightID, gfx.Rect{X: 120, Width: 100, Height: 50}, "Right", gfx.HitOptions{Role: gfx.RoleTextField})
+		canvas.HitWithOptions(buttonID, gfx.Rect{Y: 60, Width: 100, Height: 40}, "Activate right", gfx.HitOptions{Role: gfx.RoleButton})
+		if canvas.Clicked(buttonID) {
+			canvas.RequestFocus(rightID)
+		}
+	}
+	config.TextInput = func(context TextInputContext) *TextInput {
+		switch context.ID {
+		case leftID:
+			return &TextInput{Editor: left, Bounds: context.Bounds, FontSize: 13}
+		case rightID:
+			return &TextInput{Editor: right, Bounds: context.Bounds, FontSize: 13}
+		}
+		return nil
+	}
+	var canvas gfx.Canvas
+	painter := newTestPainter(t, &canvas, config)
+	painter.coalesceInput = true
+	painter.scheduleFrame = func(time.Duration) {}
+	press := platform.PointerEvent{Kind: platform.PointerDown, Button: gfx.PointerButtonPrimary, X: 20, Y: 75}
+	if _, err := painter.pointerEvent(press); err != nil {
+		t.Fatal(err)
+	}
+	press.Kind = platform.PointerUp
+	frame, err := painter.pointerEvent(press)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !frame.TextInput.Changed || frame.TextInput.Input == nil || frame.TextInput.Input.Target != rightID || painter.activeEditor != right {
+		t.Fatalf("release did not publish the requested editor before the next key: %+v, owner=%p", frame.TextInput, painter.activeEditor)
+	}
+}

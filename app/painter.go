@@ -358,6 +358,11 @@ func (painter *painter) pointerEvent(event platform.PointerEvent) (platform.Fram
 		}
 		return platform.Frame{}, nil
 	}
+	if painter.coalesceInput && painter.scheduleFrame != nil && painter.focus.Carries() {
+		// Settle an event-pass focus request against the new layout before the
+		// next native key. A click can close a menu or change the focused hit.
+		return painter.repaint()
+	}
 	if painter.coalesceInput && painter.scheduleFrame != nil && painter.focus.Focused() != beforeFocus {
 		// The platform can receive a key before the deferred paint runs.
 		// Publish the new text owner now, using the last paint's hit geometry.

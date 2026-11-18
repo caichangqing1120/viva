@@ -43,9 +43,10 @@ type painter struct {
 	activeText *TextInput
 	// activeEditor remembers the installed owner independently of a provider's
 	// reusable TextInput, which the application may mutate between frames.
-	activeEditor *text.Editor
-	onTextEvent  platform.TextHandler
-	textEpoch    uint64
+	activeEditor          *text.Editor
+	cancelLegacyOnHandoff bool
+	onTextEvent           platform.TextHandler
+	textEpoch             uint64
 	// placing is a press on a text field that lays its rows out itself being held
 	// (see placeCaret), from the rune index placeAnchor. placeUnit is the click
 	// unit a multi-click press took (2 a word, 3 a line) and placeUnitRange the
@@ -1415,6 +1416,8 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 func (painter *painter) settleTextInput() {
 	editor := painter.activeEditor
 	painter.activeEditor = nil
+	cancelLegacy := painter.cancelLegacyOnHandoff
+	painter.cancelLegacyOnHandoff = false
 	if editor == nil || !painter.textEnabled {
 		return
 	}
@@ -1427,6 +1430,8 @@ func (painter *painter) settleTextInput() {
 		if phase == text.CompositionCommit && painter.nativeText.Secure {
 			editor.ClearHistory()
 		}
+	} else if cancelLegacy {
+		editor.CancelComposition()
 	}
 	editor.BreakUndoGroup()
 }
@@ -1488,8 +1493,9 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 		return painter.nativeText.State, nil
 	}
 	var next TextState
+	var accepted bool
 	if editor != nil {
-		accepted := appEvent.apply(editor)
+		accepted = appEvent.apply(editor)
 		if painter.nativeText.Secure && accepted && !editor.TentativeCompositionActive() {
 			editor.ClearHistory()
 		}
@@ -1508,6 +1514,11 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 		native := painter.nativeText.State
 		native.Redraw = true
 		return native, nil
+	}
+	if !next.Composing {
+		painter.cancelLegacyOnHandoff = false
+	} else if editor != nil && accepted && event.Kind == platform.TextSetMarked && !explicit {
+		painter.cancelLegacyOnHandoff = event.CancelOnHandoff
 	}
 	painter.textEpoch++
 	painter.activeText.State = next

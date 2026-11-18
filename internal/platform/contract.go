@@ -1067,6 +1067,9 @@ type TextEvent struct {
 	CompositionPhase    text.CompositionPhase
 	ReplacementUTF16    text.UTF16Range
 	HasReplacementUTF16 bool
+	// CancelOnHandoff marks a legacy preedit whose native context is retired
+	// when focus leaves the owning editor.
+	CancelOnHandoff bool
 }
 
 // TextHandler applies one native edit and returns the complete new state.

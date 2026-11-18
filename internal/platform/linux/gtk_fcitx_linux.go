@@ -50,11 +50,21 @@ func gtkDirectFcitxAllowed(override, module string) bool {
 	return (override == "" || override == "1") && (module == "fcitx" || module == "fcitx5")
 }
 
+func gtkDirectFcitxField(input *platform.TextInput, continuing bool) bool {
+	if input.Secure || input.Terminal || input.DisableIME {
+		return false
+	}
+	// An existing connection can order the handoff to a single-line editor
+	// without requiring that editor to opt in to tentative composition.
+	return input.State.TentativeComposition || continuing && !input.Multiline &&
+		input.State.InputOwner != (platform.TextInputOwner{})
+}
+
 func (ime *gtkIME) startDirect() bool {
 	w := ime.w
 	override := os.Getenv("VIVA_GTK_FCITX_DIRECT")
 	if !gtkDirectFcitxAllowed(override, "fcitx") || !ime.directFailure.canTry(w.app.fcitxWatch.owners) || !ime.focused || !w.text.enabled ||
-		w.text.input.Secure || w.text.input.Terminal || w.text.input.DisableIME || w.nativeKeys || !w.text.state.TentativeComposition || ime.active {
+		!gtkDirectFcitxField(&w.text.input, false) || w.nativeKeys || ime.active {
 		return false
 	}
 	ime.realized()
@@ -96,7 +106,11 @@ func (d *gtkDirectFcitx) cancelPreedit() {
 	if d.current() != 0 && ime.session {
 		ime.session, ime.engineComposing = false, false
 		d.hidePopup()
-		ime.apply(platform.TextEvent{Kind: platform.TextCancelComposition, CompositionPhase: text.CompositionCancel})
+		event := platform.TextEvent{Kind: platform.TextCancelComposition}
+		if ime.tentative {
+			event.CompositionPhase = text.CompositionCancel
+		}
+		ime.apply(event)
 	}
 }
 
@@ -106,7 +120,7 @@ func (d *gtkDirectFcitx) sync() {
 	}
 	ime, w := d.ime, d.ime.w
 	input := &w.text.input
-	if w.text.enabled && (input.Secure || input.Terminal || input.DisableIME || !input.State.TentativeComposition) {
+	if w.text.enabled && !gtkDirectFcitxField(input, true) {
 		d.close()
 		ime.sync()
 		return
@@ -301,10 +315,7 @@ func (d *gtkDirectFcitx) event(event fcitx.Event) {
 			value.WriteString(part.Text)
 		}
 		if value.Len() == 0 {
-			if ime.session {
-				ime.session, ime.engineComposing = false, false
-				ime.apply(platform.TextEvent{Kind: platform.TextCancelComposition, CompositionPhase: text.CompositionCancel})
-			}
+			d.cancelPreedit()
 			return
 		}
 		if highlight.Start == highlight.End {
@@ -312,7 +323,13 @@ func (d *gtkDirectFcitx) event(event fcitx.Event) {
 			highlight = text.Range{Start: cursor, End: cursor}
 		}
 		ime.session, ime.engineComposing = true, true
-		ime.apply(platform.TextEvent{Kind: platform.TextSetMarked, CompositionPhase: text.CompositionUpdate, Text: value.String(), MarkedSelection: highlight})
+		update := platform.TextEvent{Kind: platform.TextSetMarked, Text: value.String(), MarkedSelection: highlight}
+		if ime.tentative {
+			update.CompositionPhase = text.CompositionUpdate
+		} else {
+			update.CancelOnHandoff = true
+		}
+		ime.apply(update)
 	case fcitx.Forward:
 		kind := gdkKeyPress
 		if event.Key.Release {

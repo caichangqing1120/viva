@@ -93,6 +93,67 @@ func TestGtkFcitxDeliveryNeverReplaysAnUncertainOrForwardedKey(t *testing.T) {
 	}
 }
 
+func TestGTKNativeDirectFcitxHotkeyOnFieldHandoff(t *testing.T) {
+	if os.Getenv("VIVA_GTK_FCITX_HANDOFF") != "1" || os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" || os.Getenv("VIVA_IBUS_ENGINE") != "pinyin" {
+		t.Skip("requires the private Fcitx Pinyin handoff fixture")
+	}
+	t.Setenv("VIVA_GTK_FCITX_DIRECT", "")
+	testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) {
+		p.asynchronous, p.keyIngress = true, true
+		document, field := text.NewEditor("body"), text.NewEditor("")
+		if !document.EnableTentativeComposition() {
+			t.Fatal("document did not enable tentative composition")
+		}
+		p.install(document)
+		finish := func(failure ...string) {
+			p.record("immediate Fcitx hotkey after field handoff", failure...)
+			p.w.destroy()
+		}
+		probe := &gtkFcitxProbe{p: p}
+		deadline := time.Now().Add(3 * time.Second)
+		var await func(func() bool, func(), string)
+		await = func(check func() bool, then func(), description string) {
+			switch {
+			case check():
+				then()
+			case time.Now().After(deadline):
+				finish(description)
+			default:
+				probe.later(10*time.Millisecond, func() { await(check, then, description) })
+			}
+		}
+		await(func() bool {
+			engine, err := nativeFcitxCommand("--check", "-n")
+			return err == nil && engine != ""
+		}, func() {
+			if err := selectNativeFcitxEngine("pinyin"); err != nil {
+				finish(err.Error())
+				return
+			}
+			p.installField(field, false)
+			keys := []struct{ symbol, state uint32 }{{' ', gdkControlMask}, {'n', 0}, {'i', 0}, {'h', 0}, {'a', 0}, {'o', 0}, {' ', 0}}
+			// Do not pump GTK between the handoff and the hotkey/typing sequence.
+			for _, key := range keys {
+				if err := p.press(p.w.ime.ctx, key.symbol, key.state); err != nil {
+					finish(err.Error())
+					return
+				}
+				if err := p.release(key.symbol, key.state); err != nil {
+					finish(err.Error())
+					return
+				}
+			}
+			await(func() bool { return field.String() == "\u4f60\u597d" && !field.CompositionActive() }, func() {
+				if document.String() != "body" || field.TentativeCompositionEnabled() {
+					finish("handoff changed the outgoing document or the field's composition mode")
+					return
+				}
+				finish()
+			}, "the field did not confirm Chinese from the immediate hotkey/typing sequence")
+		}, "Fcitx did not focus the initial document")
+	})
+}
+
 func TestGTKNativeDirectFcitxSwitchesModulesDuringPreedit(t *testing.T) {
 	if os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" || os.Getenv("GTK_IM_MODULE") != "" {
 		t.Skip("requires a private Fcitx fixture and an unforced GTK input module")

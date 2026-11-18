@@ -107,10 +107,14 @@ func (p *gtkTentativeProbe) observe() {
 }
 
 func (p *gtkTentativeProbe) install(editor *text.Editor) {
+	p.installField(editor, true)
+}
+
+func (p *gtkTentativeProbe) installField(editor *text.Editor, multiline bool) {
 	p.editor = editor
 	field := platform.TextInput{
 		Target: gfx.Item(1), X: 20, Y: 20, Width: 300, Height: 100, FontSize: 16,
-		Multiline: true, Color: platform.Color{Alpha: 1}, State: platform.EditorState(editor),
+		Multiline: multiline, Color: platform.Color{Alpha: 1}, State: platform.EditorState(editor),
 		OnEvent: func(event platform.TextEvent) (platform.TextState, error) {
 			p.events = append(p.events, event)
 			if p.reject != nil {

@@ -12,17 +12,17 @@ import (
 var shellHooks atomic.Pointer[desktopHooks]
 
 type desktopHooks struct {
-	clipboardText     func() (string, error)
-	setClipboardText  func(string) error
-	setClipboardHTML  func(html, alt string) error
-	hasClipboardImage func() bool
-	clipboardImagePNG func() ([]byte, error)
-	clipboardFiles    func() ([]string, error)
-	setClipboardFiles func([]string) error
-	primaryText       func() (string, error)
-	setPrimaryText    func(string) error
-	setCursorShape    func(uint8) error
-	setCursorImage    func(*gfx.CursorImage) error
-	saveFileDialog    func(title, name string, filters []portalFilter) (string, bool, error)
-	preparePortalSave func() (func(), error)
+	clipboardText        func() (string, error)
+	setClipboardText     func(string) error
+	setClipboardHTML     func(html, alt string) error
+	hasClipboardImage    func() bool
+	clipboardImagePNG    func() ([]byte, error)
+	clipboardFiles       func() ([]string, error)
+	setClipboardFiles    func([]string) error
+	primaryText          func() (string, error)
+	setPrimaryText       func(string) error
+	setCursorShape       func(uint8) error
+	setCursorImage       func(*gfx.CursorImage) error
+	saveFileDialog       func(title, name string, filters []portalFilter) (string, bool, error)
+	preparePortalChooser func() (func(), error)
 }

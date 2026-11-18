@@ -617,10 +617,9 @@ func SaveFile(options SaveFileOptions) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	request := portalFileRequest{
+	paths, canceled, err := portalChoose(portalFileRequest{
 		method: "SaveFile", parent: portalParent(), title: options.Title, filters: filters, currentName: name,
-	}
-	paths, canceled, err := portalSave(request)
+	})
 	if !errors.Is(err, errServiceMissing) {
 		return firstPath(paths), canceled, singlePathError(paths, canceled, err, "save file")
 	}
@@ -649,17 +648,22 @@ func SaveFile(options SaveFileOptions) (string, bool, error) {
 	return paths[0], false, nil
 }
 
-func portalSave(request portalFileRequest) ([]string, bool, error) {
-	if hooks := shellHooks.Load(); hooks != nil && hooks.preparePortalSave != nil {
-		resume, err := hooks.preparePortalSave()
+func portalChoose(request portalFileRequest) (paths []string, canceled bool, err error) {
+	paths, _, canceled, err = portalChooseWithChoices(request)
+	return paths, canceled, err
+}
+
+func portalChooseWithChoices(request portalFileRequest) ([]string, map[string]string, bool, error) {
+	if hooks := shellHooks.Load(); hooks != nil && hooks.preparePortalChooser != nil {
+		resume, err := hooks.preparePortalChooser()
 		if resume != nil {
 			defer resume()
 		}
 		if err != nil {
-			return nil, false, err
+			return nil, nil, false, err
 		}
 	}
-	return portalChoose(request)
+	return requestPortalFile(request)
 }
 
 func SaveFileWithCheckbox(options SaveFileOptions, label string, initial bool) (string, bool, bool, error) {

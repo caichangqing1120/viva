@@ -85,7 +85,7 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 		api.addFilter(dialog, ptr) // The chooser takes ownership.
 	}
 	var err error
-	resumeInput, err = a.suspendSaveInput(parent)
+	resumeInput, err = a.suspendChooserInput(parent)
 	if err != nil {
 		return "", false, err
 	}
@@ -104,18 +104,18 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 	return goString(path), false, nil
 }
 
-func (a *gtkApplication) preparePortalSave() (func(), error) {
+func (a *gtkApplication) preparePortalChooser() (func(), error) {
 	if a.mainThread != syscall.Gettid() || !a.wayland || a.stopping || a.active == nil || a.active.closed || a.active.destroying {
 		return nil, nil
 	}
 	if a.saveDialogOwner != nil {
-		return nil, fmt.Errorf("linux: a save file dialog is already open")
+		return nil, fmt.Errorf("linux: a file chooser is already open")
 	}
 	parent := a.active
 	if parent.ime == nil || !parent.ime.composing() {
 		return nil, nil
 	}
-	resume, err := a.suspendSaveInput(parent)
+	resume, err := a.suspendChooserInput(parent)
 	if err == nil {
 		// Send the old candidate surface's removal to the compositor before the
 		// external chooser maps its window and takes keyboard focus.
@@ -127,7 +127,7 @@ func (a *gtkApplication) preparePortalSave() (func(), error) {
 	return resume, err
 }
 
-func (a *gtkApplication) suspendSaveInput(parent *gtkWindow) (func(), error) {
+func (a *gtkApplication) suspendChooserInput(parent *gtkWindow) (func(), error) {
 	a.saveDialogOwner = parent
 	var suspended *gtkIME
 	var suspendedDirect *gtkDirectFcitx

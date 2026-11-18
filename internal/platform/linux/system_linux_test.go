@@ -120,6 +120,36 @@ func TestFileDialogCancellation(t *testing.T) {
 	}
 }
 
+func TestPortalFileOperationsReleaseInputWhenPreparationFails(t *testing.T) {
+	previous := shellHooks.Load()
+	t.Cleanup(func() { shellHooks.Store(previous) })
+	prepareErr := errors.New("test input preparation failed")
+	prepared, resumed := 0, 0
+	shellHooks.Store(&desktopHooks{preparePortalChooser: func() (func(), error) {
+		prepared++
+		return func() { resumed++ }, prepareErr
+	}})
+	for _, operation := range []struct {
+		name string
+		run  func() error
+	}{
+		{"open", func() error { _, _, err := OpenFiles(OpenFileOptions{}); return err }},
+		{"directory", func() error { _, _, err := OpenDirectory(OpenDirectoryOptions{}); return err }},
+		{"save", func() error { _, _, err := SaveFile(SaveFileOptions{SuggestedName: "doc.txt"}); return err }},
+		{"save with choice", func() error {
+			_, _, _, err := SaveFileWithCheckbox(SaveFileOptions{SuggestedName: "doc.txt"}, "Include workspace", false)
+			return err
+		}},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			before := prepared
+			if err := operation.run(); !errors.Is(err, prepareErr) || prepared != before+1 || resumed != prepared {
+				t.Fatalf("err=%v, prepared=%d, resumed=%d, before=%d", err, prepared, resumed, before)
+			}
+		})
+	}
+}
+
 func TestSetClipboardTextClaimsSelection(t *testing.T) {
 	reply := &xcbSelectionOwnerReply{Owner: 22}
 	var owner, selection uint32

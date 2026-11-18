@@ -64,6 +64,7 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 	}
 	a.saveDialogOwner = parent
 	var suspended *gtkIME
+	var suspendedDirect *gtkDirectFcitx
 	defer func() {
 		api.destroy(dialog)
 		a.g.objectUnref(dialog)
@@ -72,6 +73,9 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 		if suspended != nil && !a.stopping && !parent.closed && parent.ime == suspended && suspended.ctx == 0 {
 			suspended.open()
 			suspended.sync()
+		}
+		if suspendedDirect != nil && !a.stopping && !parent.closed && parent.ime == suspendedDirect.ime && parent.ime.direct == suspendedDirect {
+			suspendedDirect.sync()
 		}
 	}()
 	api.modal(dialog, 1)
@@ -89,10 +93,16 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 	}
 	// Drop the editor's active context before GTK focuses the dialog. A native
 	// focus-out can otherwise submit stale preedit or leave its popup mapped.
-	if ime := parent.ime; ime != nil && ime.composing() {
-		suspended = ime
-		ime.close()
-		if !parent.closed && parent.text.enabled && parent.text.state.Composing {
+	if ime := parent.ime; ime != nil {
+		composing := ime.composing()
+		if ime.direct != nil {
+			suspendedDirect = ime.direct
+			suspendedDirect.suspend()
+		} else if composing {
+			suspended = ime
+			ime.close()
+		}
+		if composing && !parent.closed && parent.text.enabled && parent.text.state.Composing {
 			event := platform.TextEvent{Kind: platform.TextCancelComposition}
 			if parent.text.state.TentativeComposition {
 				event.CompositionPhase = text.CompositionCancel

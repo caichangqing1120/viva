@@ -489,11 +489,18 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 		return 0
 	}
 	e := (*gdkEventKey)(unsafePointer(event))
-	if e.Type == gdkKeyRelease {
-		w.keyRelease(e, event)
+	if w.ime != nil && w.ime.direct != nil && w.ime.direct.queueKey(e) {
 		return 1
 	}
-	if w.ime != nil && w.ime.filtering() && !w.ime.prepareKey() {
+	return w.routeKey(e, event, true)
+}
+
+func (w *gtkWindow) routeKey(e *gdkEventKey, event uintptr, useIME bool) uintptr {
+	if e.Type == gdkKeyRelease {
+		w.keyRelease(e, event, useIME)
+		return 1
+	}
+	if useIME && w.ime != nil && w.ime.filtering() && !w.ime.prepareKey() {
 		return 1
 	}
 	if w.keys.down == nil {
@@ -519,7 +526,7 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 			keyEvent.Typed = string(r)
 		}
 		if key.IsModifier() {
-			if w.ime != nil && w.ime.filtering() {
+			if useIME && w.ime != nil && w.ime.filtering() {
 				w.ime.filter(event)
 			}
 			keyEvent.Modifiers |= key.Modifier()
@@ -529,7 +536,7 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 	} else if key.IsModifier() {
 		// An input method reads a lone modifier by its press and its release (a bare Shift
 		// switches between Chinese and English); GTK hands both to the context.
-		if w.ime != nil && w.ime.filtering() {
+		if useIME && w.ime != nil && w.ime.filtering() {
 			w.ime.filter(event)
 		}
 		w.tapModifier(key, keyEvent.Modifiers|key.Modifier(), repeat, false, e.HardwareKeycode)
@@ -557,7 +564,7 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 	// and one it hands back arrives again as an ordinary key event.
 	plainShortcut := candidate && !primary && !composing && !w.text.ownsChord(keyEvent)
 	var context uintptr
-	if w.ime != nil && w.ime.filtering() {
+	if useIME && w.ime != nil && w.ime.filtering() {
 		context = w.ime.ctx
 		if plainShortcut {
 			direct, _ := keysymRune(e.Keyval)
@@ -596,7 +603,7 @@ func (w *gtkWindow) tapModifier(key input.Key, modifiers input.Modifiers, repeat
 	w.present(frame, err)
 }
 
-func (w *gtkWindow) keyRelease(e *gdkEventKey, event uintptr) {
+func (w *gtkWindow) keyRelease(e *gdkEventKey, event uintptr, useIME bool) {
 	pressed := w.keys.down[e.HardwareKeycode]
 	delete(w.keys.down, e.HardwareKeycode)
 	if !pressed {
@@ -609,7 +616,7 @@ func (w *gtkWindow) keyRelease(e *gdkEventKey, event uintptr) {
 	if key := normalizedKeysym(e.Keyval); key.IsModifier() && !w.wantsKeyReleases() {
 		w.tapModifier(key, gdkModifiers(e.State)&^key.Modifier(), false, true, e.HardwareKeycode)
 	}
-	if w.ime != nil && w.ime.filtering() && w.ime.filter(event) {
+	if useIME && w.ime != nil && w.ime.filtering() && w.ime.filter(event) {
 		return
 	}
 	if !w.wantsKeyReleases() || w.config.OnKey == nil {

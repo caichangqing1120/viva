@@ -39,6 +39,11 @@ func (e *Encoder) Uint32(value uint32) {
 	e.buf = binary.LittleEndian.AppendUint32(e.buf, value)
 }
 
+func (e *Encoder) Uint64(value uint64) {
+	e.Align(8)
+	e.buf = binary.LittleEndian.AppendUint64(e.buf, value)
+}
+
 // Float64 writes a double, which the wire format aligns on eight bytes.
 func (e *Encoder) Float64(value float64) {
 	e.Align(8)

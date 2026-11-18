@@ -18,13 +18,15 @@ import (
 // and commits the choice as it does on the other platforms. The input method owns the candidate
 // window; this side says when the field has the keyboard and where its caret is.
 type gtkIME struct {
-	w         *gtkWindow
-	g         *gtkLibrary
-	ctx       uintptr
-	target    gfx.ID
-	editor    platform.TextInputOwner
-	owner     text.CompositionIdentity
-	tentative bool
+	w            *gtkWindow
+	g            *gtkLibrary
+	ctx          uintptr
+	target       gfx.ID
+	editor       platform.TextInputOwner
+	owner        text.CompositionIdentity
+	tentative    bool
+	direct       *gtkDirectFcitx
+	directFailed bool
 	// focused is whether the window has the keyboard; active is whether the context was told the
 	// field does.
 	focused bool
@@ -177,6 +179,10 @@ func (ime *gtkIME) filterShortcut(event uintptr, key platform.KeyEvent, directTe
 // frame, which is when the field changes, and does nothing when nothing has.
 func (ime *gtkIME) sync() {
 	if ime.ctx == 0 || ime.w.closed {
+		return
+	}
+	if ime.direct != nil || ime.startDirect() {
+		ime.direct.sync()
 		return
 	}
 	text := ime.w.text

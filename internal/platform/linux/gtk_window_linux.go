@@ -428,6 +428,9 @@ func (w *gtkWindow) cleanup() {
 		w.config.Waker.Unbind()
 	}
 	if w.ime != nil {
+		if w.ime.direct != nil {
+			w.ime.direct.close()
+		}
 		w.ime.close()
 		w.ime = nil
 	}

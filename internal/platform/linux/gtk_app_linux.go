@@ -278,6 +278,13 @@ func (a *gtkApplication) rebuildPoll() {
 	if a.status != nil {
 		wanted[a.status.conn.FD()] = true
 	}
+	for _, w := range a.windows {
+		if w.ime != nil && w.ime.direct != nil {
+			if fd := w.ime.direct.client.FD(); fd >= 0 {
+				wanted[fd] = true
+			}
+		}
+	}
 	for fd, source := range a.watched {
 		if !wanted[fd] {
 			a.g.sourceRemove(source)
@@ -301,6 +308,14 @@ func (a *gtkApplication) serveDescriptor(fd int) {
 		a.serveDesktop()
 	case a.status != nil && a.status.conn.FD() == fd:
 		a.serveStatus()
+	default:
+		for _, w := range a.windows {
+			if w.ime != nil && w.ime.direct != nil && w.ime.direct.client.FD() == fd {
+				d := w.ime.direct
+				d.receive(d.client.Dispatch())
+				return
+			}
+		}
 	}
 }
 

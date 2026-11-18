@@ -36,6 +36,8 @@ const (
 	service          = "org.freedesktop.IBus"
 	busPath          = "/org/freedesktop/IBus"
 	contextInterface = "org.freedesktop.IBus.InputContext"
+	busService       = "org.freedesktop.DBus"
+	busObject        = "/org/freedesktop/DBus"
 
 	// CapPreeditText says the client draws preedit text itself.
 	CapPreeditText uint32 = 1 << 0
@@ -60,6 +62,8 @@ const (
 
 // ErrClosed is returned once the bus has failed or been closed.
 var ErrClosed = errors.New("ibus: the connection is closed")
+
+var errServiceOwnerChanged = errors.New("ibus: the input method service owner changed")
 
 // transport is the part of a D-Bus connection the client uses.
 type transport interface {
@@ -233,7 +237,11 @@ func newBus(conn transport) *Bus {
 	// match rule needs the request; a daemon that refuses it still delivers.
 	var rule dbus.Encoder
 	rule.String("type='signal',interface='" + contextInterface + "'")
-	_, _ = conn.Call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", "s", rule.Bytes())
+	_, _ = conn.Call(busService, busObject, busService, "AddMatch", "s", rule.Bytes())
+	// Fcitx can serve IBus on a session bus that outlives the input method.
+	var ownerRule dbus.Encoder
+	ownerRule.String("type='signal',sender='" + busService + "',interface='" + busService + "',member='NameOwnerChanged',arg0='" + service + "'")
+	_, _ = conn.Call(busService, busObject, busService, "AddMatch", "s", ownerRule.Bytes())
 	return bus
 }
 
@@ -313,7 +321,9 @@ func (bus *Bus) Dispatch() error {
 		for _, message := range messages {
 			switch message.Type {
 			case dbus.TypeSignal:
-				if context := bus.contexts[message.Path]; context != nil && message.Interface == contextInterface {
+				if serviceOwnerChanged(message) {
+					bus.fail(errServiceOwnerChanged)
+				} else if context := bus.contexts[message.Path]; context != nil && message.Interface == contextInterface {
 					context.signal(message)
 				}
 			case dbus.TypeReturn, dbus.TypeError:
@@ -329,6 +339,16 @@ func (bus *Bus) Dispatch() error {
 			return nil
 		}
 	}
+}
+
+func serviceOwnerChanged(message *dbus.Message) bool {
+	if message.Sender != busService || message.Path != busObject || message.Interface != busService ||
+		message.Member != "NameOwnerChanged" || message.Signature != "sss" {
+		return false
+	}
+	args := message.Args()
+	name, old, next := args.String(), args.String(), args.String()
+	return args.Err() == nil && args.Done() && name == service && old != "" && old != next
 }
 
 // answer records the engine's verdict on a key and releases the verdicts that

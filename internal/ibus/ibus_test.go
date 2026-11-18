@@ -131,6 +131,50 @@ func keyAnswer(serial uint32, handled bool) *dbus.Message {
 
 const testContext = "/org/freedesktop/IBus/InputContext_1"
 
+func TestServiceOwnerChangeRetiresTheOldContexts(t *testing.T) {
+	ownerChange := func(sender, name, old, next string) *dbus.Message {
+		var args dbus.Encoder
+		args.String(name)
+		args.String(old)
+		args.String(next)
+		return &dbus.Message{Type: dbus.TypeSignal, Sender: sender, Path: "/org/freedesktop/DBus",
+			Interface: "org.freedesktop.DBus", Member: "NameOwnerChanged", Signature: "sss", Body: args.Bytes()}
+	}
+	for _, next := range []string{"", ":1.9"} {
+		t.Run("new owner "+next, func(t *testing.T) {
+			var events []string
+			bus, context, transport := newTestBus(t, Handler{Commit: func(value string) { events = append(events, value) }})
+			matches := transport.calls("AddMatch")
+			if len(matches) != 2 || dbus.NewDecoder(matches[1].body).String() != "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.IBus'" {
+				t.Errorf("missing scoped owner match: %+v", matches)
+			}
+			if err := context.ProcessKey('x', 53, 0, func(handled bool) {
+				if handled || bus.Err() == nil {
+					t.Errorf("pending key handled=%t bus error=%v", handled, bus.Err())
+				}
+				events = append(events, "fallback")
+			}); err != nil {
+				t.Fatal(err)
+			}
+			transport.incoming = []*dbus.Message{
+				ownerChange(":1.8", service, ":1.7", ""),
+				ownerChange("org.freedesktop.DBus", "unrelated.service", ":1.8", ""),
+				ownerChange("org.freedesktop.DBus", service, "", ":1.7"),
+				commitSignal(testContext, "confirmed"),
+				ownerChange("org.freedesktop.DBus", service, ":1.7", next),
+				commitSignal(testContext, "stale"),
+				keyAnswer(transport.serial, true),
+			}
+			if err := bus.Dispatch(); err == nil || !transport.closed || len(bus.contexts) != 0 {
+				t.Errorf("owner change left an open bus: err=%v closed=%t contexts=%d", err, transport.closed, len(bus.contexts))
+			}
+			if !reflect.DeepEqual(events, []string{"confirmed", "fallback"}) {
+				t.Errorf("callbacks = %q, want confirmed result before fallback and no stale reply", events)
+			}
+		})
+	}
+}
+
 func newTestBus(t *testing.T, handler Handler) (*Bus, *Context, *fakeTransport) {
 	t.Helper()
 	transport := &fakeTransport{createPath: testContext}

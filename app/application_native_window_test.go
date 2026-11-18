@@ -6,28 +6,27 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/internal/platform"
 )
 
-type nativeWindowTestPlatform struct {
-	platform.Application
+type nativeWindowTestHost struct {
+	fakeHost
 	control *nativeWindowTestControl
 }
 
-func (native *nativeWindowTestPlatform) OpenWindow(config platform.Config) (platform.Window, error) {
-	native.control.config = config
-	return native.control, nil
+func (host *nativeWindowTestHost) OpenWindow(config Config, _ *gfx.Canvas, closed func()) (WindowControl, error) {
+	host.control.config, host.control.closed = config, closed
+	return resultWindow{WindowControl: host.control, painter: &painter{}}, nil
 }
 
 type nativeWindowTestControl struct {
 	fakeWindow
-	config     platform.Config
 	fullscreen bool
 	title      string
 	size       [2]int
 }
 
-func (control *nativeWindowTestControl) Close()           { control.config.OnClosed() }
 func (control *nativeWindowTestControl) Fullscreen() bool { return control.fullscreen }
 func (control *nativeWindowTestControl) SetFullscreen(value bool) error {
 	control.fullscreen = value
@@ -47,7 +46,7 @@ func (*nativeWindowTestControl) SetAlwaysOnTop(bool) error {
 
 func TestNativeOpenWindowKeepsOptionalWindowControls(t *testing.T) {
 	control := &nativeWindowTestControl{}
-	application := &Application{host: nativeHost{native: &nativeWindowTestPlatform{control: control}}}
+	application := &Application{host: &nativeWindowTestHost{control: control}}
 	window, err := application.OpenWindow(Config{Title: "native controls", Width: 320, Height: 240}, nil)
 	if err != nil {
 		t.Fatal(err)

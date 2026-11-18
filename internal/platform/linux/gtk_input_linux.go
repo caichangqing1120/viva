@@ -411,6 +411,9 @@ func (w *gtkWindow) setKeyboard(focused bool) {
 		if w.config.OnActivate != nil {
 			w.config.OnActivate()
 		}
+		if w.focused {
+			w.refreshReadOnlyTextInput()
+		}
 		platform.NotifyAppearanceChanged()
 		return
 	}
@@ -480,6 +483,15 @@ func (w *gtkWindow) wantsKeyReleases() bool {
 	return t != nil && t.enabled && t.input.Terminal && t.input.KeyReleases
 }
 
+// Publish the input owner before GTK routes a key through a stale read-only frame.
+func (w *gtkWindow) refreshReadOnlyTextInput() {
+	if !w.closed && !w.destroying && !w.nativeKeys &&
+		w.config.DynamicTextInput && w.text != nil && !w.text.enabled &&
+		w.config.OnRedraw != nil && w.config.ReadOnlyTextFocused != nil && w.config.ReadOnlyTextFocused() {
+		w.redraw()
+	}
+}
+
 // keyEvent routes one key press or release of the toplevel. It reports 1 when Viva took the key.
 func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 	if w.nativeKeys {
@@ -489,6 +501,16 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 		return 0
 	}
 	e := (*gdkEventKey)(unsafePointer(event))
+	if e.Type == gdkKeyPress && !normalizedKeysym(e.Keyval).IsModifier() {
+		hadFocus := w.focused
+		w.refreshReadOnlyTextInput()
+		if w.closed || w.destroying || w.app.stopping || hadFocus && !w.focused {
+			return 1
+		}
+		if w.nativeKeys {
+			return 0
+		}
+	}
 	if w.ime != nil && w.ime.direct != nil && w.ime.direct.queueKey(e) {
 		return 1
 	}

@@ -426,6 +426,19 @@ func (w *gtkWindow) setKeyboard(focused bool) {
 
 // stateChanged follows the window being minimized and maximized.
 func (w *gtkWindow) stateChanged(e *gdkEventWindowState) {
+	const compositorSized = gdkWindowStateMaximized | gdkWindowStateFullscreen
+	if w.app.wayland && e.Changed&compositorSized != 0 &&
+		(w.config.MinWidth > 0 || w.config.MinHeight > 0) {
+		managed := e.New&compositorSized != 0
+		wasManaged := (e.New^e.Changed)&compositorSized != 0
+		if managed && !wasManaged {
+			// GTK can enforce the normal minimum on a later configure and commit
+			// geometry larger than the compositor's maximized or fullscreen size.
+			w.g.windowSetGeometry(w.toplevel, 0, &gdkGeometry{}, 0)
+		} else if !managed && wasManaged {
+			w.setMinimumSize()
+		}
+	}
 	if e.Changed&gdkWindowStateFullscreen != 0 {
 		fullscreen := e.New&gdkWindowStateFullscreen != 0
 		if w.observeFullscreen(fullscreen) {

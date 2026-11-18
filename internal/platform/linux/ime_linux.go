@@ -40,8 +40,6 @@ type linuxIME struct {
 	focused   bool
 	active    bool
 	focusSpan uint64
-	// reconnectTried prevents duplicate FocusIn from retrying in the same span.
-	reconnectTried bool
 	// engineComposing is whether the engine believes a composition is under way.
 	engineComposing bool
 	// cursor is the last caret location sent, and haveCursor says it was sent.
@@ -85,8 +83,8 @@ func (application *linuxApplication) newIME(win *window, textInput *linuxTextInp
 	return ime
 }
 
-// inputMethodBus probes for an IME once at startup. An established input
-// method that disconnects may later reconnect on a keyboard focus change.
+// inputMethodBus probes for an IME once at startup. After that the focused
+// field can establish a fresh connection without blocking the event loop.
 func (application *linuxApplication) inputMethodBus() *ibus.Bus {
 	if !application.ibusTried {
 		application.ibusTried = true
@@ -142,7 +140,6 @@ func (ime *linuxIME) close() {
 func (ime *linuxIME) setFocused(focused bool) {
 	if ime.focused != focused {
 		ime.focusSpan++
-		ime.reconnectTried = false
 	}
 	ime.focused = focused
 	ime.sync()

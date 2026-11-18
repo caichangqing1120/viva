@@ -2,10 +2,49 @@ package linux
 
 import (
 	"testing"
+	"time"
 
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/text"
 )
+
+func TestIMEReconnectWakesOnlyForTheFocusedField(t *testing.T) {
+	h := newIMEHarness(t)
+	app, ime := h.ime.app, h.ime
+	now := time.Unix(100, 0)
+	app.now = func() time.Time { return now }
+	h.focus(t)
+	app.setInputMethodFocus(ime)
+	if timeout := app.pollTimeout(); timeout != -1 {
+		t.Fatalf("healthy IME woke the idle event loop: %d ms", timeout)
+	}
+	ime.lost()
+	attempt := &imeReconnect{ime: ime, span: ime.focusSpan, epoch: ime.epoch,
+		target: ime.text.input.Target, owner: ime.text.state.InputOwner}
+	app.ibusReconnect = attempt
+	if timeout := app.pollTimeout(); timeout != -1 {
+		t.Fatalf("in-flight reconnect scheduled another poll: %d ms", timeout)
+	}
+	app.finishInputMethodReconnect(attempt)
+	if timeout := app.pollTimeout(); timeout <= 0 || timeout > int32(time.Second.Milliseconds()) {
+		t.Fatalf("failed reconnect did not schedule a bounded retry: %d ms", timeout)
+	}
+	for range 20 {
+		app.delayInputMethodRetry()
+	}
+	if timeout := app.pollTimeout(); timeout <= 0 || timeout > int32(imeRetryMax.Milliseconds())+1 {
+		t.Fatalf("repeated failures did not cap the retry interval: %d ms", timeout)
+	}
+	ime.text.enabled = false
+	if timeout := app.pollTimeout(); timeout != -1 {
+		t.Fatalf("disabled field kept the retry alive: %d ms", timeout)
+	}
+	ime.text.enabled = true
+	ime.setFocused(false)
+	if timeout := app.pollTimeout(); timeout != -1 {
+		t.Fatalf("unfocused field kept the retry alive: %d ms", timeout)
+	}
+}
 
 func TestIMEReconnectRejectsChangedFocusOrEditor(t *testing.T) {
 	for _, tc := range []struct {

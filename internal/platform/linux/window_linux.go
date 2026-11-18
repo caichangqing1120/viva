@@ -183,6 +183,8 @@ type linuxApplication struct {
 	ibusTried       bool
 	ibusReconnect   *imeReconnect
 	ibusResumeFocus *linuxIME
+	ibusRetryAt     time.Time
+	ibusRetryDelay  time.Duration
 
 	// live is every window that can still be posted to, for requests that come
 	// from another goroutine (see post); the loop's own slice is not safe to read
@@ -251,6 +253,7 @@ func RunApplication(start platform.ApplicationStart) error {
 		// Whoever started to watch the desktop's settings during the last events is
 		// heard from now on.
 		application.syncDesktopWatch()
+		application.startInputMethodReconnect()
 		fds := application.pollFDs
 		states := application.pollStates
 		if len(fds) == 0 {
@@ -370,12 +373,11 @@ func (application *linuxApplication) OpenWindow(config platform.Config) (platfor
 			return nil, err
 		}
 	}
-	var ime *linuxIME
 	state.router = eventRouter{
 		config: config, text: textInput, scale: win.displayScale, modifierKeys: newModifierTracker(),
 		clicks: &input.ClickCounter{Interval: 500 * time.Millisecond, Distance: 4},
 		present: func(frame platform.Frame) error {
-			if ime != nil {
+			if ime := state.router.ime; ime != nil {
 				defer ime.sync()
 			}
 			if frame.Accessibility != nil {
@@ -404,9 +406,7 @@ func (application *linuxApplication) OpenWindow(config platform.Config) (platfor
 		return nil, err
 	}
 	if config.DynamicTextInput || config.TextInput != nil {
-		if ime = application.newIME(win, textInput, state.router); ime != nil {
-			state.router.ime = ime
-		}
+		state.router.ime = application.newIME(win, textInput, state.router)
 	}
 	if config.Waker != nil && config.OnRedraw != nil {
 		config.Waker.Bind(win.postRedraw)
@@ -483,6 +483,12 @@ func (application *linuxApplication) pollTimeout() int32 {
 	if application.ibus != nil {
 		if deadline, waiting := application.ibus.Deadline(); waiting {
 			timeout = int32(max(time.Until(deadline).Milliseconds()+1, 0))
+		}
+	}
+	if deadline, waiting := application.inputMethodRetryDeadline(); waiting {
+		retryTimeout := int32(max(deadline.Sub(application.timeNow()).Milliseconds()+1, 0))
+		if timeout < 0 || retryTimeout < timeout {
+			timeout = retryTimeout
 		}
 	}
 	if deadline, waiting := application.desktopRetry.deadline(platform.DesktopWatched(), application.desktop != nil); waiting {
@@ -774,6 +780,9 @@ func (application *linuxApplication) closeWindow(target *linuxWindowState) {
 		}
 	}
 	if target.router.ime != nil {
+		if application.ibusResumeFocus == target.router.ime {
+			application.setInputMethodFocus(nil)
+		}
 		target.router.ime.close()
 	}
 	application.atspiClosed(target)
@@ -1117,10 +1126,18 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 				router.modifierKeys.reset()
 			}
 		}
-		if router.ime != nil && realFocus {
-			router.ime.setFocused(true)
-			if keyboardFocus {
-				router.ime.reconnectOnFocus()
+		if realFocus {
+			if keyboardFocus && router.ime == nil && (config.DynamicTextInput || config.TextInput != nil) {
+				ime := &linuxIME{app: state.application, text: state.text, router: state.router, origin: win.contentOrigin, dead: true}
+				ime.router.ime = ime
+				state.router.ime = ime
+				router.ime = ime
+			}
+			if router.ime != nil {
+				router.ime.setFocused(true)
+				if keyboardFocus {
+					state.application.setInputMethodFocus(router.ime)
+				}
 			}
 		}
 	case xcbFocusOut:
@@ -1139,7 +1156,7 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 		if router.ime != nil && realFocusLoss {
 			router.ime.setFocused(false)
 			if state.application.ibusResumeFocus == router.ime {
-				state.application.ibusResumeFocus = nil
+				state.application.setInputMethodFocus(nil)
 			}
 		}
 		if realFocusLoss {

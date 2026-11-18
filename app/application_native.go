@@ -85,6 +85,8 @@ var _ interface {
 	runShortcut(keymap.Chord) (gfx.EventResult, bool)
 } = resultWindow{}
 
+func (window resultWindow) underlyingWindowControl() WindowControl { return window.WindowControl }
+
 func (window resultWindow) applyResult(result gfx.EventResult) bool {
 	return window.painter.applyEventResult(result)
 }

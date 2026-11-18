@@ -29,6 +29,23 @@ type gtkDirectFcitx struct {
 	failing       bool
 }
 
+type gtkDirectFcitxFailure struct {
+	blocked bool
+	owners  [2]string
+}
+
+func (failure gtkDirectFcitxFailure) canTry(owners [2]string) bool {
+	if !failure.blocked {
+		return true
+	}
+	for i, owner := range owners {
+		if owner != "" && owner != failure.owners[i] {
+			return true
+		}
+	}
+	return false
+}
+
 func gtkDirectFcitxAllowed(override, module string) bool {
 	return (override == "" || override == "1") && (module == "fcitx" || module == "fcitx5")
 }
@@ -36,7 +53,7 @@ func gtkDirectFcitxAllowed(override, module string) bool {
 func (ime *gtkIME) startDirect() bool {
 	w := ime.w
 	override := os.Getenv("VIVA_GTK_FCITX_DIRECT")
-	if !gtkDirectFcitxAllowed(override, "fcitx") || ime.directFailed || !ime.focused || !w.text.enabled ||
+	if !gtkDirectFcitxAllowed(override, "fcitx") || !ime.directFailure.canTry(w.app.fcitxWatch.owners) || !ime.focused || !w.text.enabled ||
 		w.text.input.Secure || w.text.input.Terminal || w.text.input.DisableIME || w.nativeKeys || !w.text.state.TentativeComposition || ime.active {
 		return false
 	}
@@ -48,15 +65,17 @@ func (ime *gtkIME) startDirect() bool {
 	if !gtkDirectFcitxAllowed(override, goString(contextID(ime.ctx))) {
 		return false
 	}
+	w.app.watchFcitx(ime)
 	display := "x11:"
 	if w.app.wayland {
 		display = "wayland:"
 	}
 	client, err := fcitx.Dial(filepath.Base(os.Args[0]), display)
 	if err != nil {
-		ime.directFailed = true
+		ime.directFailure = gtkDirectFcitxFailure{blocked: true, owners: w.app.fcitxWatch.owners}
 		return false
 	}
+	ime.directFailure = gtkDirectFcitxFailure{}
 	ime.direct = &gtkDirectFcitx{ime: ime, client: client, keys: make(map[uint64]gdkEventKey)}
 	w.app.watchDirectFcitxModule(contextID)
 	w.app.rebuildPoll()
@@ -250,7 +269,18 @@ func (d *gtkDirectFcitx) receive(err error) {
 		return
 	}
 	ime := d.ime
-	ime.directFailed = true
+	if !errors.Is(err, errGtkFcitxModuleChanged) {
+		owners := ime.w.app.fcitxWatch.owners
+		name, owner := d.client.ServiceOwner()
+		for i, service := range gtkFcitxServices {
+			if service == name {
+				// The watcher may already have reported the replacement before
+				// this client received NameOwnerChanged on its own connection.
+				owners[i] = owner
+			}
+		}
+		ime.directFailure = gtkDirectFcitxFailure{blocked: true, owners: owners}
+	}
 	d.close()
 	ime.sync()
 }

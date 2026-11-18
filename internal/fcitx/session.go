@@ -164,6 +164,10 @@ func newClient(conn transport, name, owner, program, display string, now func() 
 	return &Client{conn: conn, name: name, daemon: owner, program: program, display: display, now: now}
 }
 
+// ServiceOwner identifies the well-known service and the unique owner this
+// client connected to, even after it has been closed.
+func (c *Client) ServiceOwner() (name, owner string) { return c.name, c.daemon }
+
 func (c *Client) FD() int {
 	if c.err != nil {
 		return -1

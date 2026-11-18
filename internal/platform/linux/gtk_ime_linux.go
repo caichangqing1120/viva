@@ -18,15 +18,15 @@ import (
 // and commits the choice as it does on the other platforms. The input method owns the candidate
 // window; this side says when the field has the keyboard and where its caret is.
 type gtkIME struct {
-	w            *gtkWindow
-	g            *gtkLibrary
-	ctx          uintptr
-	target       gfx.ID
-	editor       platform.TextInputOwner
-	owner        text.CompositionIdentity
-	tentative    bool
-	direct       *gtkDirectFcitx
-	directFailed bool
+	w             *gtkWindow
+	g             *gtkLibrary
+	ctx           uintptr
+	target        gfx.ID
+	editor        platform.TextInputOwner
+	owner         text.CompositionIdentity
+	tentative     bool
+	direct        *gtkDirectFcitx
+	directFailure gtkDirectFcitxFailure
 	// focused is whether the window has the keyboard; active is whether the context was told the
 	// field does.
 	focused bool

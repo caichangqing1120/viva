@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"math/bits"
 	"sync"
 
 	"github.com/ebitengine/purego"
@@ -10,10 +11,13 @@ import (
 	"github.com/vivaui/viva/text"
 )
 
+var gtkFcitxServices = [...]string{"org.fcitx.Fcitx5", "org.freedesktop.portal.Fcitx"}
+
 type gtkFcitxWatch struct {
 	contextID func(uintptr) uintptr
 	unwatch   func(uint32)
 	ids       [2]uint32
+	owners    [2]string
 	present   uintptr
 	checked   bool
 	settings  uintptr
@@ -69,13 +73,13 @@ func (a *gtkApplication) watchFcitx(ime *gtkIME) {
 	}
 	var watch func(bus int32, name *byte, flags uint32, appeared, vanished, data, destroy uintptr) uint32
 	if !a.g.lookup(&watch, "g_bus_watch_name") || !a.g.lookup(&state.unwatch, "g_bus_unwatch_name") {
-		state.contextID = nil
 		return
 	}
 	gtkFcitxCallbacks.Do(func() {
-		gtkFcitxCallbacks.appeared = purego.NewCallback(func(_, _, _, bit uintptr) {
+		gtkFcitxCallbacks.appeared = purego.NewCallback(func(_, _, nameOwner, bit uintptr) {
 			if app := gtkRunning.Load(); app != nil {
 				app.fcitxWatch.present |= bit
+				app.fcitxWatch.owners[bits.TrailingZeros(uint(bit))] = goString(nameOwner)
 			}
 		})
 		gtkFcitxCallbacks.vanished = purego.NewCallback(func(_, _, bit uintptr) {
@@ -86,7 +90,7 @@ func (a *gtkApplication) watchFcitx(ime *gtkIME) {
 	})
 	// The GTK module can use the main or portal service. Do not activate either.
 	const sessionBus = 2 // G_BUS_TYPE_SESSION
-	for index, name := range [...]string{"org.fcitx.Fcitx5", "org.freedesktop.portal.Fcitx"} {
+	for index, name := range gtkFcitxServices {
 		state.ids[index] = watch(sessionBus, &cString(name)[0], 0, gtkFcitxCallbacks.appeared, gtkFcitxCallbacks.vanished, 1<<index, 0)
 	}
 }
@@ -118,6 +122,7 @@ func (a *gtkApplication) fcitxVanished(bit uintptr) {
 	watch := &a.fcitxWatch
 	wasPresent := watch.present
 	watch.present &^= bit
+	watch.owners[bits.TrailingZeros(uint(bit))] = ""
 	if wasPresent == 0 || watch.present != 0 || a.stopping {
 		return
 	}
@@ -128,7 +133,7 @@ func (a *gtkApplication) fcitxVanished(bit uintptr) {
 	}
 	var affected []target
 	for _, window := range a.windows {
-		if ime := window.ime; ime != nil && ime.tentative && ime.session && ime.current(ime.ctx) && watch.matches(ime) {
+		if ime := window.ime; ime != nil && ime.direct == nil && ime.tentative && ime.session && ime.current(ime.ctx) && watch.matches(ime) {
 			affected = append(affected, target{ime, ime.ctx})
 		}
 	}

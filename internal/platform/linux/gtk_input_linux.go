@@ -543,6 +543,7 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 		shortcutEvent.Key, shortcutEvent.Text = input.KeyUnknown, " "
 	}
 	composing := w.text != nil && w.text.state.Composing || w.ime != nil && w.ime.composing()
+	marked := w.text != nil && w.text.state.Composing && w.text.state.Composition.Start < w.text.state.Composition.End
 	candidate := w.config.OnShortcut != nil && e.State&(1<<7) == 0 && platform.ShortcutCandidate(shortcutEvent)
 	primary := shortcutEvent.Modifiers&(input.ModifierControl|input.ModifierMeta) != 0
 	if candidate && primary && !composing && !w.text.ownsChord(keyEvent) {
@@ -572,7 +573,7 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 	}
 	// During preedit, an application chord is offered only after GTK declines it.
 	// A forwarded key still belongs to the field if it is an editing chord.
-	if plainShortcut || candidate && primary && composing &&
+	if plainShortcut || candidate && primary && marked &&
 		!w.text.ownsChord(keyEvent) && !w.text.ownsEditingChord(keyEvent) {
 		frame, handled, err := w.config.OnShortcut(shortcutEvent)
 		w.present(frame, err)

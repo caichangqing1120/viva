@@ -23,15 +23,34 @@ type gtkFcitxProbe struct {
 	live      []string
 	key       int
 	contextID func(uintptr) uintptr
+	endings   []string
+	firstMode int
+	modes     int
 }
 
 func TestGTKNativeFcitxComposition(t *testing.T) {
+	testGTKNativeFcitx(t, 0, 2, "commit", "escape", "reset", "native-focus-out", "window-focus-out", "application-discard")
+}
+
+func TestGTKNativeFcitxDeclinedShortcut(t *testing.T) {
+	if os.Getenv("VIVA_IBUS_ENGINE") != "pinyin" {
+		t.Skip("requires the Fcitx Pinyin shortcut fixture")
+	}
+	for mode := range 2 {
+		t.Run(fmt.Sprintf("tentative=%t", mode != 0), func(t *testing.T) {
+			testGTKNativeFcitx(t, mode, 1, "declined-shortcut")
+		})
+	}
+}
+
+func testGTKNativeFcitx(t *testing.T, firstMode, modes int, endings ...string) {
+	t.Helper()
 	if os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" {
 		t.Skip("native Fcitx GTK probe requires the private Fcitx fixture")
 	}
-	const trials = 14
+	trials := modes * len(endings)
 	testGTKNativeTentativeProbe(t, trials, func(p *gtkTentativeProbe) {
-		probe := &gtkFcitxProbe{p: p, engine: os.Getenv("VIVA_IBUS_ENGINE")}
+		probe := &gtkFcitxProbe{p: p, engine: os.Getenv("VIVA_IBUS_ENGINE"), endings: endings, firstMode: firstMode, modes: modes}
 		p.asynchronous, p.keyIngress = true, true
 		backend := typeNameOf(p.w.g, p.w.g.gdkDisplayDefault())
 		want := "GdkX11Display"
@@ -190,14 +209,13 @@ func (probe *gtkFcitxProbe) wait(check func() (bool, error), next func()) {
 }
 
 func (probe *gtkFcitxProbe) begin() {
-	endings := [...]string{"commit", "escape", "reset", "native-focus-out", "window-focus-out", "application-discard", "declined-shortcut"}
-	if probe.trial == 2*len(endings) {
+	if probe.trial == probe.modes*len(probe.endings) {
 		probe.p.w.destroy()
 		return
 	}
 	p := probe.p
-	p.tentative = probe.trial >= len(endings)
-	probe.ending = endings[probe.trial%len(endings)]
+	p.tentative = probe.firstMode+probe.trial/len(probe.endings) != 0
+	probe.ending = probe.endings[probe.trial%len(probe.endings)]
 	editor := text.NewEditor("abc")
 	editor.SetSelection(text.Range{Start: 1, End: 2})
 	if p.tentative && !editor.EnableTentativeComposition() {
@@ -297,9 +315,6 @@ func (probe *gtkFcitxProbe) settle() {
 			// Finish via a real input-method key so the next trial does not
 			// inherit live composition while Fcitx establishes a new context.
 			probe.want = "a\u4f60\u597dc"
-			if probe.engine == "hangul" {
-				probe.want = "a\uac00\ub098 c"
-			}
 			if err := p.press(context, ' ', 0); err != nil {
 				probe.finish(err.Error())
 				return

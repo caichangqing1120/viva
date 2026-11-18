@@ -158,7 +158,7 @@ jobs:
         run: |
           for backend in x11 wayland; do
             for engine in pinyin hangul; do
-              xvfb-run -a env VIVA_FCITX_ENGINE="$engine" VIVA_FCITX_REFERENCE=1 VIVA_FCITX_GTK_REFERENCE=1 VIVA_GTK_IME_NATIVE=1 G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN='^Test(NativeIBus(Frontend|OwnerReactivation|FactoryDeclinedShortcut|UnsupportedModeRetirement)|GTKNativeFcitx(Composition|WindowClose))$' sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
+              xvfb-run -a env VIVA_FCITX_ENGINE="$engine" VIVA_FCITX_REFERENCE=1 VIVA_FCITX_GTK_REFERENCE=1 VIVA_GTK_IME_NATIVE=1 G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN='^Test(NativeIBus(Frontend|OwnerReactivation|FactoryDeclinedShortcut|UnsupportedModeRetirement)|GTKNativeFcitx(Composition|DeclinedShortcut|WindowClose))$' sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
             done
           done
       - name: GTK real seat keyboard and Fcitx composition

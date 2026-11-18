@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"syscall"
+
+	"github.com/vivaui/viva/internal/platform"
+	"github.com/vivaui/viva/text"
 )
 
 // saveFileDialog keeps the fallback dialog transient for the active Wayland
@@ -60,12 +63,16 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 		return "", false, fmt.Errorf("linux: could not create a GTK save file dialog")
 	}
 	a.saveDialogOwner = parent
-	a.dismissSaveDialog = func() { api.hide(dialog) }
+	var suspended *gtkIME
 	defer func() {
 		api.destroy(dialog)
 		a.g.objectUnref(dialog)
 		a.dismissSaveDialog = nil
 		a.saveDialogOwner = nil
+		if suspended != nil && !a.stopping && !parent.closed && parent.ime == suspended && suspended.ctx == 0 {
+			suspended.open()
+			suspended.sync()
+		}
 	}()
 	api.modal(dialog, 1)
 	api.overwrite(dialog, 1)
@@ -80,6 +87,27 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 		}
 		api.addFilter(dialog, ptr) // The chooser takes ownership.
 	}
+	// Drop the editor's active context before GTK focuses the dialog. A native
+	// focus-out can otherwise submit stale preedit or leave its popup mapped.
+	if ime := parent.ime; ime != nil && ime.composing() {
+		suspended = ime
+		ime.close()
+		if !parent.closed && parent.text.enabled && parent.text.state.Composing {
+			event := platform.TextEvent{Kind: platform.TextCancelComposition}
+			if parent.text.state.TentativeComposition {
+				event.CompositionPhase = text.CompositionCancel
+			}
+			frame, err := parent.text.textEvent(event)
+			if err != nil {
+				return "", false, err
+			}
+			parent.present(frame, nil)
+		}
+	}
+	if parent.closed || a.stopping {
+		return "", true, nil
+	}
+	a.dismissSaveDialog = func() { api.hide(dialog) }
 	if api.run(dialog) != acceptResponse || parent.closed || a.stopping {
 		return "", true, nil
 	}

@@ -543,9 +543,9 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 		shortcutEvent.Key, shortcutEvent.Text = input.KeyUnknown, " "
 	}
 	composing := w.text != nil && w.text.state.Composing || w.ime != nil && w.ime.composing()
-	if w.config.OnShortcut != nil && platform.ShortcutCandidate(shortcutEvent) &&
-		shortcutEvent.Modifiers&(input.ModifierControl|input.ModifierMeta) != 0 &&
-		e.State&(1<<7) == 0 && !composing && !w.text.ownsChord(keyEvent) {
+	candidate := w.config.OnShortcut != nil && e.State&(1<<7) == 0 && platform.ShortcutCandidate(shortcutEvent)
+	primary := shortcutEvent.Modifiers&(input.ModifierControl|input.ModifierMeta) != 0
+	if candidate && primary && !composing && !w.text.ownsChord(keyEvent) {
 		frame, handled, err := w.config.OnShortcut(shortcutEvent)
 		w.present(frame, err)
 		if handled {
@@ -554,10 +554,10 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 	}
 	// The input method gets the key first; one it takes comes back as a commit or a preedit change,
 	// and one it hands back arrives again as an ordinary key event.
-	plainShortcut := w.config.OnShortcut != nil && platform.ShortcutCandidate(shortcutEvent) &&
-		shortcutEvent.Modifiers&(input.ModifierControl|input.ModifierMeta) == 0 &&
-		e.State&(1<<7) == 0 && !composing && !w.text.ownsChord(keyEvent)
+	plainShortcut := candidate && !primary && !composing && !w.text.ownsChord(keyEvent)
+	var context uintptr
 	if w.ime != nil && w.ime.filtering() {
+		context = w.ime.ctx
 		if plainShortcut {
 			direct, _ := keysymRune(e.Keyval)
 			if w.ime.filterShortcut(event, shortcutEvent, string(direct)) {
@@ -567,7 +567,13 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 			return 1
 		}
 	}
-	if plainShortcut {
+	if w.closed || context != 0 && (w.ime == nil || w.ime.ctx != context) {
+		return 1
+	}
+	// During preedit, an application chord is offered only after GTK declines it.
+	// A forwarded key still belongs to the field if it is an editing chord.
+	if plainShortcut || candidate && primary && composing &&
+		!w.text.ownsChord(keyEvent) && !w.text.ownsEditingChord(keyEvent) {
 		frame, handled, err := w.config.OnShortcut(shortcutEvent)
 		w.present(frame, err)
 		if handled {

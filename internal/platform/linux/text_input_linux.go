@@ -450,6 +450,14 @@ func (state *linuxTextInput) ownsChord(event platform.KeyEvent) bool {
 		// Enter belongs to the composition, which it commits.
 		return event.Key == input.KeyEnter
 	}
+	return state.ownsEditingChord(event)
+}
+
+// ownsEditingChord checks the editor's own bindings after the input method has declined a key.
+func (state *linuxTextInput) ownsEditingChord(event platform.KeyEvent) bool {
+	if state == nil || !state.enabled || state.input.Terminal {
+		return false
+	}
 	if platform.TextClipboardAction(event) != 0 {
 		return true
 	}

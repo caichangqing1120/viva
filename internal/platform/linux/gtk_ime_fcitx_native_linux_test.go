@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vivaui/viva/internal/input"
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/text"
 )
@@ -28,7 +29,7 @@ func TestGTKNativeFcitxComposition(t *testing.T) {
 	if os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" {
 		t.Skip("native Fcitx GTK probe requires the private Fcitx fixture")
 	}
-	const trials = 12
+	const trials = 14
 	testGTKNativeTentativeProbe(t, trials, func(p *gtkTentativeProbe) {
 		probe := &gtkFcitxProbe{p: p, engine: os.Getenv("VIVA_IBUS_ENGINE")}
 		p.asynchronous, p.keyIngress = true, true
@@ -189,7 +190,7 @@ func (probe *gtkFcitxProbe) wait(check func() (bool, error), next func()) {
 }
 
 func (probe *gtkFcitxProbe) begin() {
-	endings := [...]string{"commit", "escape", "reset", "native-focus-out", "window-focus-out", "application-discard"}
+	endings := [...]string{"commit", "escape", "reset", "native-focus-out", "window-focus-out", "application-discard", "declined-shortcut"}
 	if probe.trial == 2*len(endings) {
 		probe.p.w.destroy()
 		return
@@ -272,6 +273,42 @@ func (probe *gtkFcitxProbe) settle() {
 		p.w.ime.active, p.w.ime.focused = false, false
 	case "window-focus-out":
 		p.w.ime.setFocused(false)
+	case "declined-shortcut":
+		before := platform.EditorState(p.editor)
+		calls := 0
+		p.w.config.OnShortcut = func(event platform.KeyEvent) (platform.Frame, bool, error) {
+			if (event.Text != "S" && event.Text != "s") || event.Modifiers != input.ModifierControl|input.ModifierShift {
+				return platform.Frame{}, false, nil
+			}
+			calls++
+			return platform.Frame{}, true, nil
+		}
+		if err := p.press(context, 'S', gdkControlMask|gdkShiftMask); err != nil {
+			p.w.config.OnShortcut = nil
+			probe.finish(err.Error())
+			return
+		}
+		probe.later(150*time.Millisecond, func() {
+			p.w.config.OnShortcut = nil
+			if calls != 1 || platform.EditorState(p.editor) != before {
+				probe.finish(fmt.Sprintf("declined Ctrl+Shift+S delivery: shortcuts=%d text=%q, want one shortcut and unchanged preedit %q", calls, p.editor.String(), before.Value))
+				return
+			}
+			// Finish via a real input-method key so the next trial does not
+			// inherit live composition while Fcitx establishes a new context.
+			probe.want = "a\u4f60\u597dc"
+			if probe.engine == "hangul" {
+				probe.want = "a\uac00\ub098 c"
+			}
+			if err := p.press(context, ' ', 0); err != nil {
+				probe.finish(err.Error())
+				return
+			}
+			probe.wait(func() (bool, error) {
+				return p.editor.String() == probe.want && !p.w.text.state.Composing, nil
+			}, func() { probe.finish("") })
+		})
+		return
 	case "application-discard":
 		p.w.g.objectRef(context)
 		defer p.w.g.objectUnref(context)

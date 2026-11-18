@@ -41,7 +41,7 @@ func TestInitMakesAProjectThatBuildsAndTests(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "go.sum"), sum, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("go", "test", "./...")
+	command := exec.Command("go", "test", "-trimpath", "./...")
 	command.Dir = directory
 	command.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
 	if combined, err := command.CombinedOutput(); err != nil {

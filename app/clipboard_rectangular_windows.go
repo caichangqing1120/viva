@@ -6,6 +6,8 @@ func nativeSetRectangularClipboardText(value string) error {
 	return windowsplatform.SetClipboardRectangularText(value)
 }
 
+func nativeClipboardRectangular() bool { return windowsplatform.ClipboardRectangular() }
+
 func nativeClipboardTextWithFormat() (string, bool, error) {
 	return windowsplatform.ClipboardTextWithFormat()
 }

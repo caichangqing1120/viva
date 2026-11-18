@@ -97,7 +97,7 @@ func TestDocumentedRecipesCompileAfterInstallation(t *testing.T) {
 	if err := run([]string{"add", "--out", destination, "--package", "recipes", "button", "badge", "checkbox", "switch", "input", "dialog"}, ioDiscard{}); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("go", "test", "-mod=mod", "./...")
+	command := exec.Command("go", "test", "-trimpath", "-mod=mod", "./...")
 	command.Dir = destination
 	command.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := command.CombinedOutput(); err != nil {
@@ -127,7 +127,7 @@ func TestEveryRecipeCompilesInstalledOnItsOwn(t *testing.T) {
 			t.Fatalf("add %s: %v", name, err)
 		}
 	}
-	command := exec.Command("go", "build", "-mod=mod", "./...")
+	command := exec.Command("go", "build", "-trimpath", "-mod=mod", "./...")
 	command.Dir = destination
 	command.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := command.CombinedOutput(); err != nil {
@@ -176,7 +176,7 @@ func TestAddingARecipeAlsoInstallsWhatItCallsInto(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destination, "go.mod"), []byte(module), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("go", "build", "-mod=mod", "./...")
+	command := exec.Command("go", "build", "-trimpath", "-mod=mod", "./...")
 	command.Dir = destination
 	command.Env = append(os.Environ(), "GOWORK=off")
 	if built, err := command.CombinedOutput(); err != nil {

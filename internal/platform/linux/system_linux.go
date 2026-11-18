@@ -623,6 +623,12 @@ func SaveFile(options SaveFileOptions) (string, bool, error) {
 	if !errors.Is(err, errServiceMissing) {
 		return firstPath(paths), canceled, singlePathError(paths, canceled, err, "save file")
 	}
+	if hooks := shellHooks.Load(); hooks != nil && hooks.saveFileDialog != nil {
+		path, canceled, err := hooks.saveFileDialog(options.Title, name, filters)
+		if !errors.Is(err, errServiceMissing) {
+			return path, canceled, err
+		}
+	}
 	backend, path, err := fileDialogBackend()
 	if err != nil {
 		return "", false, err

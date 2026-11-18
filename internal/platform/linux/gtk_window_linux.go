@@ -415,6 +415,9 @@ func (w *gtkWindow) cleanup() {
 		return
 	}
 	w.closed = true
+	if w.app.saveDialogOwner == w && w.app.dismissSaveDialog != nil {
+		w.app.dismissSaveDialog()
+	}
 	for _, v := range w.views {
 		v.release()
 	}

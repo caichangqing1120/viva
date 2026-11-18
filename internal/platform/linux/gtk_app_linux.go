@@ -41,7 +41,9 @@ type gtkApplication struct {
 	// mainThread is the thread that runs the loop, which is where GTK may be called.
 	mainThread int
 	// active is the window the keyboard or the pointer was last in.
-	active *gtkWindow
+	active            *gtkWindow
+	saveDialogOwner   *gtkWindow
+	dismissSaveDialog func()
 
 	tasks gtkTasks
 	// settings are the desktop's settings as last read; settingsPending says a change is being
@@ -199,6 +201,9 @@ func (a *gtkApplication) fail(err error) {
 func (a *gtkApplication) stop() {
 	if !a.stopping {
 		a.stopping = true
+		if a.dismissSaveDialog != nil {
+			a.dismissSaveDialog()
+		}
 		if a.mainRunning {
 			a.g.mainQuit()
 		}

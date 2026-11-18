@@ -1495,7 +1495,7 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 	var next TextState
 	var accepted bool
 	if editor != nil {
-		accepted = appEvent.apply(editor)
+		accepted = appEvent.Apply(editor)
 		if painter.nativeText.Secure && accepted && !editor.TentativeCompositionActive() {
 			editor.ClearHistory()
 		}

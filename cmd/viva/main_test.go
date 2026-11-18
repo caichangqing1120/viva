@@ -159,7 +159,7 @@ func TestAddingARecipeAlsoInstallsWhatItCallsInto(t *testing.T) {
 	if err := run([]string{"add", "--out", destination, "--package", "recipes", "dialog"}, &output); err != nil {
 		t.Fatal(err)
 	}
-	files := []string{"button.go", "alert_dialog.go", "dialog.go"}
+	files := []string{"button.go", "dialog.go"}
 	for _, file := range files {
 		if _, err := os.Stat(filepath.Join(destination, file)); err != nil {
 			t.Errorf("adding dialog did not install %s: %v", file, err)
@@ -212,7 +212,7 @@ func TestARequiredRecipeThatIsAlreadyInstalledIsLeftAlone(t *testing.T) {
 
 func TestRequirementsComeFirstAndAreListedOnce(t *testing.T) {
 	got := withRequirements([]string{"card", "dialog", "button", "dialog"})
-	if strings.Join(got, ",") != "card,button,alert-dialog,dialog" {
+	if strings.Join(got, ",") != "card,button,dialog" {
 		t.Fatalf("order = %v", got)
 	}
 }

@@ -13,10 +13,10 @@ func TestColorSwatchChoosesByClick(t *testing.T) {
 	d := openPage(t, func(c ui.C) {
 		ui.Row(c).Gap(4).Children(func() {
 			for _, s := range []struct {
-				name string
+				Name string
 				col  gfx.Color
 			}{{"Red", red}, {"Blue", blue}} {
-				if ui.ColorSwatch(c.Key(s.name), s.col, chosen == s.col, s.name).Clicked() {
+				if ui.ColorSwatch(c.Key(s.Name), s.col, chosen == s.col, s.Name).Clicked() {
 					chosen = s.col
 				}
 			}
@@ -37,9 +37,9 @@ func TestColorSwatchChoosesByClick(t *testing.T) {
 	}
 }
 
-func pickerPage(t *testing.T, state *ui.ColorPickerState, color *gfx.Color) *pageDriver {
+func pickerPage(t *testing.T, state *ui.ColorPickerState, Color *gfx.Color) *pageDriver {
 	return openPage(t, func(c ui.C) {
-		ui.Column(c).Pad(16).Children(func() { ui.ColorPicker(c, state, color, "Accent") })
+		ui.Column(c).Pad(16).Children(func() { ui.ColorPicker(c, state, Color, "Accent") })
 	})
 }
 
@@ -52,7 +52,7 @@ func TestColorPickerAppliesATypedHex(t *testing.T) {
 		t.Fatal("the trigger did not open the panel")
 	}
 	d.click("Hex color")
-	state.TypeHexForTest("#FF0000")
+	state.SetHexText("#FF0000")
 	d.click("OK")
 	if state.Open() || !state.Applied() {
 		t.Fatalf("Apply left open=%v", state.Open())
@@ -161,10 +161,10 @@ func TestColorSwatchPaintsWithoutAllocating(t *testing.T) {
 	d := openPage(t, func(c ui.C) {
 		ui.Row(c).Gap(4).Children(func() {
 			for _, s := range []struct {
-				name string
+				Name string
 				col  gfx.Color
 			}{{"Red", red}, {"Blue", blue}, {"Blue2", blue}, {"Red2", red}, {"Red3", red}, {"Blue3", blue}, {"Red4", red}} {
-				ui.ColorSwatch(c.Key(s.name), s.col, chosen == s.col, s.name)
+				ui.ColorSwatch(c.Key(s.Name), s.col, chosen == s.col, s.Name)
 			}
 		})
 	})

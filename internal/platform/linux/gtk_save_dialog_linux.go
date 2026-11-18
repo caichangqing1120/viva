@@ -104,27 +104,37 @@ func (a *gtkApplication) saveFileDialog(title, name string, filters []portalFilt
 	return goString(path), false, nil
 }
 
-func (a *gtkApplication) preparePortalChooser() (func(), error) {
+func (a *gtkApplication) preparePortalChooser() (string, func(), error) {
 	if a.mainThread != syscall.Gettid() || !a.wayland || a.stopping || a.active == nil || a.active.closed || a.active.destroying {
-		return nil, nil
+		return "", nil, nil
 	}
 	if a.saveDialogOwner != nil {
-		return nil, fmt.Errorf("linux: a file chooser is already open")
+		return "", nil, fmt.Errorf("linux: a file chooser is already open")
 	}
-	parent := a.active
-	if parent.ime == nil || !parent.ime.composing() {
-		return nil, nil
-	}
-	resume, err := a.suspendChooserInput(parent)
-	if err == nil {
-		// Send the old candidate surface's removal to the compositor before the
-		// external chooser maps its window and takes keyboard focus.
-		var syncDisplay func(uintptr)
-		if display := a.g.gdkDisplayDefault(); display != 0 && a.g.lookup(&syncDisplay, "gdk_display_sync") {
-			syncDisplay(display)
+	owner := a.active
+	var resume func()
+	if owner.ime != nil && owner.ime.composing() {
+		var err error
+		resume, err = a.suspendChooserInput(owner)
+		if err != nil {
+			return "", resume, err
 		}
 	}
-	return resume, err
+	parent, unexport, synced := a.exportPortalParent(owner)
+	if resume != nil && !synced {
+		// Even without xdg-foreign, remove the candidate surface before the
+		// external chooser draws.
+		a.syncChooserDisplay()
+	}
+	if unexport == nil {
+		return parent, resume, nil
+	}
+	return parent, func() {
+		unexport()
+		if resume != nil {
+			resume()
+		}
+	}, nil
 }
 
 func (a *gtkApplication) suspendChooserInput(parent *gtkWindow) (func(), error) {

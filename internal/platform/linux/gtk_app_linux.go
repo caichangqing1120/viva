@@ -44,6 +44,7 @@ type gtkApplication struct {
 	active            *gtkWindow
 	saveDialogOwner   *gtkWindow
 	dismissSaveDialog func()
+	portalExport      gtkPortalExport
 
 	tasks gtkTasks
 	// settings are the desktop's settings as last read; settingsPending says a change is being

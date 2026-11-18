@@ -125,9 +125,9 @@ func TestPortalFileOperationsReleaseInputWhenPreparationFails(t *testing.T) {
 	t.Cleanup(func() { shellHooks.Store(previous) })
 	prepareErr := errors.New("test input preparation failed")
 	prepared, resumed := 0, 0
-	shellHooks.Store(&desktopHooks{preparePortalChooser: func() (func(), error) {
+	shellHooks.Store(&desktopHooks{preparePortalChooser: func() (string, func(), error) {
 		prepared++
-		return func() { resumed++ }, prepareErr
+		return "", func() { resumed++ }, prepareErr
 	}})
 	for _, operation := range []struct {
 		name string

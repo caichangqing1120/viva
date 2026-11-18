@@ -655,12 +655,15 @@ func portalChoose(request portalFileRequest) (paths []string, canceled bool, err
 
 func portalChooseWithChoices(request portalFileRequest) ([]string, map[string]string, bool, error) {
 	if hooks := shellHooks.Load(); hooks != nil && hooks.preparePortalChooser != nil {
-		resume, err := hooks.preparePortalChooser()
+		parent, resume, err := hooks.preparePortalChooser()
 		if resume != nil {
 			defer resume()
 		}
 		if err != nil {
 			return nil, nil, false, err
+		}
+		if parent != "" {
+			request.parent = parent
 		}
 	}
 	return requestPortalFile(request)

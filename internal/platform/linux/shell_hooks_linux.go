@@ -24,5 +24,5 @@ type desktopHooks struct {
 	setCursorShape       func(uint8) error
 	setCursorImage       func(*gfx.CursorImage) error
 	saveFileDialog       func(title, name string, filters []portalFilter) (string, bool, error)
-	preparePortalChooser func() (func(), error)
+	preparePortalChooser func() (parent string, cleanup func(), err error)
 }

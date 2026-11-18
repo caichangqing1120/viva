@@ -103,7 +103,7 @@ func TestGTKNativeSaveDialogSuspendsPreeditForPortal(t *testing.T) {
 		context := p.keys.ref(w.ime.ctx)
 		defer w.g.objectUnref(context)
 		a.active = w
-		resume, err := a.preparePortalChooser()
+		_, resume, err := a.preparePortalChooser()
 		if err != nil || resume == nil {
 			p.record("portal save with preedit", fmt.Sprintf("portal input was not suspended: %v", err))
 			return

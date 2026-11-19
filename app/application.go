@@ -288,8 +288,8 @@ func (application *Application) OpenWindow(config Config, canvas *gfx.Canvas) (*
 	}
 	// Once the painter callbacks are saved, keep the native control itself so
 	// optional window methods remain discoverable through type assertions.
-	if wrapper, ok := control.(interface{ underlyingWindowControl() WindowControl }); ok {
-		window.control = wrapper.underlyingWindowControl()
+	if wrapper, ok := control.(windowControlUnwrapper); ok {
+		window.control = wrapper.unwrapWindowControl()
 	}
 	application.mu.Lock()
 	application.openedAny = true

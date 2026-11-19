@@ -18,7 +18,7 @@ const zhName = locale === 'zh' ? componentName(locale, page.ID, page.Title) : ''
 const text = messages[locale];
 const themes = { light: 'github-light', dark: 'github-dark' } as const;
 const sourceFile = `${page.ID.replaceAll('-', '_')}.go`;
-const sourcePath = page.Source || `components/${sourceFile}`;
+const sourcePath = page.PageUsage && page.PageSource ? page.PageSource : (page.Source || `components/${sourceFile}`);
 const sections = page.Sections.filter(section => section.ID !== 'source-ownership');
 ---
 
@@ -28,17 +28,23 @@ const sections = page.Sections.filter(section => section.ID !== 'source-ownershi
     <div class="title-line">
       <h1>{page.Title}{zhName && zhName !== page.Title && <span class="title-zh">{zhName}</span>}</h1>
       <a class="source-link" href={`https://github.com/vivaui/viva/blob/main/${sourcePath}`} target="_blank" rel="noopener noreferrer" aria-label={`${text.viewSource}: ${sourcePath}`}>
-        <span>{text.viewSource}</span><code>{sourcePath}</code><Icon name="arrow" size={14} />
+        <span>{page.PageUsage && page.PageSource ? text.pageApiSource : text.componentSource}</span><code>{sourcePath}</code><Icon name="arrow" size={14} />
       </a>
     </div>
   </div>
+  {page.PageUsage && <section class="doc-section" aria-labelledby="page-api"><h2 id="page-api">{text.pageApi}</h2>
+    <div class="code-block usage-block page-api-block">
+      <div class="code-toolbar"><span>{text.pageApi}</span><CopyButton text={page.PageUsage} label={text.copyUsage} {locale} client:load /></div>
+      <div class="highlighted-code"><Code code={page.PageUsage} lang="go" themes={themes} defaultColor={false} /></div>
+    </div>
+  </section>}
   <div class="doc-section">
     {page.Examples.map(example => <section class="example-section" aria-labelledby={`example-${example.ID}`}>
       <h3 id={`example-${example.ID}`}>{example.Title}<a class="heading-anchor" href={`#example-${example.ID}`} aria-label={example.Title}>#</a></h3>
       <p class="example-summary">{example.Description}</p>
-      <Preview {locale} componentID={page.ID} title={page.Title} {example} revision={page.Revision} height={example.Height} client:load />
+      <Preview {locale} componentID={page.ID} title={page.Title} example={example} revision={page.Revision} height={example.Height} client:load />
       {example.Snippet && <div class="code-block usage-block">
-        <div class="code-toolbar"><span>{text.exampleUsage}</span><CopyButton text={example.Snippet} label={text.copyUsage} {locale} client:load /></div>
+        <div class="code-toolbar"><span>{text.exampleSource}</span><CopyButton text={example.Snippet} label={text.copyUsage} {locale} client:load /></div>
         <div class="highlighted-code"><Code code={example.Snippet} lang="go" themes={themes} defaultColor={false} /></div>
       </div>}
     </section>)}

@@ -1523,7 +1523,7 @@ func (painter *painter) structuresUnchanged() bool {
 		}
 	} else if !painter.publishedTextField ||
 		painter.activeText.State.Value != painter.publishedText ||
-		painter.activeText.State.Selection != painter.publishedSelection ||
+		accessibilityTextSelection(painter.activeText.State) != painter.publishedSelection ||
 		painter.activeText.State.Composition != painter.publishedCompose ||
 		painter.activeText.State.Composing != painter.publishedComposing {
 		return false
@@ -1565,7 +1565,7 @@ func (painter *painter) recordHitStructures() {
 	painter.publishedTextField = painter.activeText != nil
 	if painter.activeText != nil {
 		painter.publishedText = painter.activeText.State.Value
-		painter.publishedSelection = painter.activeText.State.Selection
+		painter.publishedSelection = accessibilityTextSelection(painter.activeText.State)
 		painter.publishedCompose = painter.activeText.State.Composition
 		painter.publishedComposing = painter.activeText.State.Composing
 	}
@@ -1792,10 +1792,18 @@ func (painter *painter) accessibilityNode(hit *gfx.Hit, focused gfx.ID) platform
 	}
 	if node.Focused && !hit.ID.IsZero() && painter.activeText != nil && !hit.Secure &&
 		(hit.Role == gfx.RoleTextField || hit.Role == gfx.RoleCombobox) && painter.activeText.State.Value == hit.Value {
-		selection := painter.activeText.State.Selection
+		selection := accessibilityTextSelection(painter.activeText.State)
 		node.Selection = platform.AccessibilitySelection{Start: int32(selection.Start), End: int32(selection.End), Valid: true}
 	}
 	return node
+}
+
+func accessibilityTextSelection(state TextState) TextRange {
+	selection := state.Selection
+	if state.SelectionReversed {
+		selection.Start, selection.End = selection.End, selection.Start
+	}
+	return selection
 }
 
 // labelPair is a label hit waiting for the control it names.

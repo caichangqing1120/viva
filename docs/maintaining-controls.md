@@ -52,9 +52,11 @@ Opt-in page packages live under `ui/<name>` (`ui/codeeditor`, `ui/chart`,
 `ui/metriccard`, `ui/marker`, `ui/sidebar`, `ui/buttongroup`,
 `ui/togglegroup`, `ui/multiselect`,
 `ui/hierarchypicker`).
-They import only `base`, `components`, `gfx`, `ui` and `window`, own stable
-handlers, and are never imported by package `ui`; importing one is the explicit
-opt-in. Do not add a new directory at the repository root for a page widget.
+They import only the public `base`, `components`, `gfx`, `ui` and `window`
+packages, plus the focused `text` editor for editor-like controls and the root
+`markdown` parser for the Markdown view. They own stable handlers, and are never
+imported by package `ui`; importing one is the explicit opt-in. Do not add a new
+directory at the repository root for a page widget.
 See `private/docs/decisions/0086-opt-in-page-views.md`.
 
 ### Naming and types
@@ -64,7 +66,9 @@ An opt-in package is named for the capability, never with a `view` suffix:
 role, not by repeating the package: `calendar.State`, `message.Row`,
 `attachment.Card`, `hovercard.Card`. Keep local variables out of the package's
 name (`cal`, `msg`, `pic`); a model field may keep the domain noun
-(`m.calendar`) because a selector never shadows a package.
+(`m.calendar`) because a selector never shadows a package. A package exposes
+either `pkg.View(c, label, &state)` or a `state.View(c, label)` method; keep new
+packages to one of the two and document which one.
 
 ### Page controls inside a custom slot
 

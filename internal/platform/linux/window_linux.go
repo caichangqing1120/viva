@@ -621,14 +621,14 @@ func (state *linuxWindowState) coalesceMotions(event unsafe.Pointer) unsafe.Poin
 func (state *linuxWindowState) coalesceConfigures(event unsafe.Pointer) unsafe.Pointer {
 	configure := (*xcbConfigureEvent)(event)
 	var heldSync unsafe.Pointer
-	var heldPointers []unsafe.Pointer
+	var heldEvents []unsafe.Pointer
 	finish := func(boundary unsafe.Pointer) unsafe.Pointer {
-		if len(heldPointers) == 0 {
+		if len(heldEvents) == 0 {
 			state.holdEvents(heldSync, boundary)
 		} else {
-			replay := make([]unsafe.Pointer, 0, len(heldPointers)+2)
+			replay := make([]unsafe.Pointer, 0, len(heldEvents)+2)
 			replay = append(replay, heldSync)
-			replay = append(replay, heldPointers...)
+			replay = append(replay, heldEvents...)
 			replay = append(replay, boundary)
 			state.holdEvents(replay...)
 		}
@@ -653,22 +653,27 @@ func (state *linuxWindowState) coalesceConfigures(event unsafe.Pointer) unsafe.P
 			// Only stale positions are obsolete. Enter and Leave change hover
 			// state that no later motion necessarily restores, so they replay
 			// in order after the merged configure.
-			kept := heldPointers[:0]
-			for _, pointer := range heldPointers {
-				if (*xcbGenericEvent)(pointer).ResponseType&0x7f == xcbMotionNotify {
-					state.win.api.free(pointer)
+			kept := heldEvents[:0]
+			for _, held := range heldEvents {
+				if (*xcbGenericEvent)(held).ResponseType&0x7f == xcbMotionNotify {
+					state.win.api.free(held)
 				} else {
-					kept = append(kept, pointer)
+					kept = append(kept, held)
 				}
 			}
-			clear(heldPointers[len(kept):])
-			heldPointers = kept
+			clear(heldEvents[len(kept):])
+			heldEvents = kept
 			*configure = *newer
 			state.win.api.free(next)
 		case xcbExpose:
 			expose := (*xcbExposeEvent)(next)
 			if expose.Window == state.win.id && !state.hidden && state.exposed {
-				state.win.api.free(next)
+				if _, cpu := state.renderer.(*cpuWindowRenderer); cpu {
+					// A move can expose pixels without triggering a resize present.
+					heldEvents = append(heldEvents, next)
+				} else {
+					state.win.api.free(next)
+				}
 				continue
 			}
 			return finish(next)
@@ -687,7 +692,7 @@ func (state *linuxWindowState) coalesceConfigures(event unsafe.Pointer) unsafe.P
 		case xcbMotionNotify, xcbEnterNotify, xcbLeaveNotify:
 			input := (*xcbInputEvent)(next)
 			if input.Event == state.win.id {
-				heldPointers = append(heldPointers, next)
+				heldEvents = append(heldEvents, next)
 				continue
 			}
 			return finish(next)
@@ -1172,9 +1177,17 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 			return true, nil
 		}
 	case xcbExpose:
-		if (state.hidden || !state.exposed) && (*xcbExposeEvent)(event).Count == 0 {
-			state.hidden, state.exposed = false, true
-			return false, renderer.presentFull()
+		expose := (*xcbExposeEvent)(event)
+		if expose.Window != win.id {
+			break
+		}
+		if state.hidden || !state.exposed {
+			if expose.Count == 0 {
+				state.hidden, state.exposed = false, true
+				return false, renderer.presentFull()
+			}
+		} else if cpu, ok := renderer.(*cpuWindowRenderer); ok {
+			return false, cpu.restoreExposedPixels(expose)
 		}
 	case xcbSelectionRequest:
 		return false, win.handleSelectionRequest((*xcbSelectionRequestEvent)(event))

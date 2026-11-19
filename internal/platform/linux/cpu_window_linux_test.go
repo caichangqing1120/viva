@@ -182,6 +182,64 @@ func TestCPUWindowPresentFullSendsEverything(t *testing.T) {
 	}
 }
 
+func TestCPUWindowResendsExposedPixels(t *testing.T) {
+	for _, framed := range []bool{false, true} {
+		canvas := patternedCanvas(8, 6)
+		var calls []putCall
+		renderer := testCPUWindow(canvas, &calls, true)
+		renderer.full = false
+		if framed {
+			renderer.scene.canvas = raster.NewCanvas(6, 4)
+			renderer.margin, renderer.out = 1, canvas
+		}
+		state := &linuxWindowState{win: renderer.win, renderer: renderer, exposed: true}
+		t.Cleanup(func() { activeWindow.CompareAndSwap(renderer.win, nil) })
+		// A cover can expose several disjoint rectangles. Each one must reach X,
+		// not just the last event in the batch.
+		for index, x := range []uint16{1, 4} {
+			event := xcbExposeEvent{ResponseType: xcbExpose, Window: state.win.id, X: x, Y: 3, Width: 2, Height: 1, Count: uint16(1 - index)}
+			if _, err := state.handleEvent(unsafe.Pointer(&event)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(calls) != 2 {
+			t.Fatalf("framed=%t: got %d image requests for two newly visible regions", framed, len(calls))
+		}
+		for index, x := range []int{1, 4} {
+			call := calls[index]
+			start := 3*canvas.Stride + x*4
+			if call.x != int16(x) || call.y != 3 || call.width != 2 || call.height != 1 || !bytes.Equal(call.data, canvas.Pix[start:start+8]) {
+				t.Fatalf("framed=%t: request %+v did not restore the cached exposed region", framed, call)
+			}
+		}
+	}
+}
+
+func TestCPUWindowConfigureCoalescingKeepsExposes(t *testing.T) {
+	configure := xcbConfigureEvent{ResponseType: xcbConfigureNotify, Window: 2, Width: 8, Height: 6, X: 10}
+	move := xcbConfigureEvent{ResponseType: xcbConfigureNotify, Window: 2, Width: 8, Height: 6, X: 20}
+	exposure := xcbExposeEvent{ResponseType: xcbExpose, Window: 2, Width: 2, Height: 2}
+	var calls []putCall
+	renderer := testCPUWindow(patternedCanvas(8, 6), &calls, false)
+	queue := []unsafe.Pointer{unsafe.Pointer(&configure), unsafe.Pointer(&exposure), unsafe.Pointer(&move)}
+	renderer.win.api.free = func(unsafe.Pointer) {}
+	renderer.win.api.pollForEvent = func(uintptr) unsafe.Pointer {
+		if len(queue) == 0 {
+			return nil
+		}
+		event := queue[0]
+		queue = queue[1:]
+		return event
+	}
+	state := &linuxWindowState{win: renderer.win, renderer: renderer, exposed: true}
+	if got := (*xcbConfigureEvent)(state.nextEvent()); got == nil || got.X != 20 {
+		t.Fatalf("configuration updates were not combined: %+v", got)
+	}
+	if got := state.nextEvent(); got != unsafe.Pointer(&exposure) {
+		t.Fatal("coalescing a move dropped the exposed window region")
+	}
+}
+
 // A steady window that redraws the same scene and presents it allocates
 // nothing: the scene, the scratch buffer and the rasterizer are retained.
 func TestCPUWindowSteadyPresentAllocatesNothing(t *testing.T) {

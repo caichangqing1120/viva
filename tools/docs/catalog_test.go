@@ -610,6 +610,9 @@ func TestPageSnippetsNameRealAPIs(t *testing.T) {
 // they are checked for parse/API/name use elsewhere; this test proves the rest
 // are real Go against the current page API.
 func TestModelFreePageSnippetsCompile(t *testing.T) {
+	if runtime.GOARCH == "wasm" {
+		t.Skip("the host test compiles these snippets for both the host and Wasm")
+	}
 	root, err := findRoot()
 	if err != nil {
 		t.Fatal(err)
@@ -653,11 +656,6 @@ func TestModelFreePageSnippetsCompile(t *testing.T) {
 	if len(snippets) == 0 {
 		t.Skip("no model-free page snippets")
 	}
-	dir, err := os.MkdirTemp(filepath.Join(root, "build"), "snippetcheck-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
 	used["ui"] = true
 	var source strings.Builder
 	source.WriteString("package snippetcheck\n\nimport (\n")
@@ -666,17 +664,24 @@ func TestModelFreePageSnippetsCompile(t *testing.T) {
 	}
 	source.WriteString(")\n\n")
 	source.WriteString(strings.Join(snippets, "\n"))
-	if err := os.WriteFile(filepath.Join(dir, "snippets.go"), []byte(source.String()), 0o644); err != nil {
+	file := filepath.Join(t.TempDir(), "snippets.go")
+	if err := os.WriteFile(file, []byte(source.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	relative, err := filepath.Rel(root, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command("go", "build", "./"+filepath.ToSlash(relative))
-	command.Dir = root
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("model-free page snippets do not compile: %v\n%s", err, output)
+	for _, target := range []struct {
+		name string
+		env  []string
+	}{
+		{"host", nil},
+		{"wasm", targetEnvironment(os.Environ())},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			command := exec.CommandContext(t.Context(), "go", "build", file)
+			command.Dir, command.Env = root, target.env
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("model-free page snippets do not compile: %v\n%s", err, output)
+			}
+		})
 	}
 }
 

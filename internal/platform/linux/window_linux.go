@@ -1185,12 +1185,12 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 		}
 	case xcbExpose:
 		expose := (*xcbExposeEvent)(event)
-		if expose.Window != win.id {
+		if expose.Window != win.id || state.hidden {
 			break
 		}
-		if state.hidden || !state.exposed {
+		if !state.exposed {
 			if expose.Count == 0 {
-				state.hidden, state.exposed = false, true
+				state.exposed = true
 				return false, renderer.presentFull()
 			}
 		} else if cpu, ok := renderer.(*cpuWindowRenderer); ok {

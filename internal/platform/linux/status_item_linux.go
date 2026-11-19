@@ -188,6 +188,10 @@ func (state *linuxWindowState) command(command uint32, data []byte) error {
 			state.config.OnVisibility(false)
 		}
 	case commandShow:
+		if state.hidden {
+			// Allow the new MapNotify and repaint the pixels the server discarded.
+			state.hidden, state.exposed = false, false
+		}
 		win.api.mapWindow(win.connection, win.id)
 		if win.topmostConfigured.Load() {
 			action := uint32(0)

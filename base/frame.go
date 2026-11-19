@@ -232,6 +232,7 @@ type Frame struct {
 	tooltips    bool               // an element was given a Tooltip: End paints the one the pointer rests on
 	tooltip     any                // the tooltip state the layer above owns: see tooltipOf
 	drawContext DrawContext        // what a Draw callback is handed, reused for the frame
+	pickerCtx   Ctx                // the declaration context a ColorPicker's painter is handed, reused for the frame
 	Gradients   []gradient         // the gradients of the elements that have one
 	Stops       []gfx.GradientStop // their stops, in the order declared
 	paintStops  []gfx.GradientStop // the stops of the gradient being painted, faded
@@ -243,14 +244,14 @@ type Frame struct {
 	// are reached through these, set by the call that declares one, so an application
 	// that declares none does not link them.
 	paintPopoverFn func(f *Frame, i int32, n *Node)
-	groupFn        func(f *Frame, i int32, axis FocusAxis, from gfx.Mark)                // set by the first FocusGroup, like paintDrawerFn
-	paintDrawerFn  func(f *Frame, n *Node)                                               // set by the first Drawer, so a frame without one does not link it
-	PaintAddonsFn  func(f *Frame, n *Node, snapshot style.InputSnapshot, a *FieldAddons) // set by the first field Icon or Action
-	paintTooltipFn func(f *Frame)                                                        // set by the first Tooltip, so a frame without one does not link it
-	paintBarsFn    func(f *Frame, n *Node, s *ScrollState)                               // set by the first Scrollbars, so a frame without one does not link them
-	paintSwatchFn  func(f *Frame, n *Node, r Rect)                                       // set by the first ColorSwatch, so one closure is not made for each paint
-	paintPickerFn  func(f *Frame, n *Node)                                               // set by the first ColorPicker, for the same reason
-	settleFn       func(f *Frame, i int32) *bindDecl                                     // i < 0 settles them all
+	groupFn        func(f *Frame, i int32, axis FocusAxis, from gfx.Mark)          // set by the first FocusGroup, like paintDrawerFn
+	paintDrawerFn  func(f *Frame, n *Node)                                         // set by the first Drawer, so a frame without one does not link it
+	PaintAddonsFn  func(f *Frame, n *Node, snapshot InputSnapshot, a *FieldAddons) // set by the first field Icon or Action
+	paintTooltipFn func(f *Frame)                                                  // set by the first Tooltip, so a frame without one does not link it
+	paintBarsFn    func(f *Frame, n *Node, s *ScrollState)                         // set by the first Scrollbars, so a frame without one does not link them
+	paintSwatchFn  func(f *Frame, n *Node, r Rect)                                 // set by the first ColorSwatch, so one closure is not made for each paint
+	paintPickerFn  func(f *Frame, n *Node)                                         // set by the first ColorPicker, for the same reason
+	settleFn       func(f *Frame, i int32) *bindDecl                               // i < 0 settles them all
 	captionFn      func(f *Frame, n *Node, control Rect)
 	// memoFn paints, or begins (before) and ends the paint of, an element a cache
 	// declared; it reports whether the element is painted and its paint is done.

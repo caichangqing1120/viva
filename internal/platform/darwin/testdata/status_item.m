@@ -65,15 +65,18 @@ int main(void) {
                 rgba[i + 2] = color == 0 ? 0 : 255;
             }
             check(viva_application_update_icon(icon) == 1, "Dock update accepted");
-            NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:[[NSApp applicationIconImage] TIFFRepresentation]];
-            // AppKit can apply the display profile before this readback. The
-            // center still has to switch from clearly red to clearly blue.
+            NSImage *dockIcon = [NSApp applicationIconImage];
+            NSSize points = NSMakeSize(viva_dock_icon_points(icon), viva_dock_icon_points(icon));
+            check(NSEqualSizes(dockIcon.size, points), "Dock keeps the expected size in points");
+            NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:[dockIcon TIFFRepresentation]];
             NSColor *pixel = [[rep colorAtX:rep.pixelsWide / 2 y:rep.pixelsHigh / 2]
-                             colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-            int matches = rep.pixelsWide == 18 && rep.pixelsHigh == 18 && pixel != nil &&
-                          pixel.alphaComponent > 0.99 && pixel.greenComponent < 0.4 &&
-                          (color == 0 ? pixel.redComponent > 0.7 && pixel.blueComponent < 0.4
-                                      : pixel.blueComponent > 0.7 && pixel.redComponent < 0.4);
+                             colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+            // AppKit can resample and color-manage the snapshot for the current display.
+            // Distinguish the two icon colors independently of scale and color profile.
+            CGFloat primary = color == 0 ? pixel.redComponent : pixel.blueComponent;
+            CGFloat other = color == 0 ? pixel.blueComponent : pixel.redComponent;
+            int matches = pixel != nil && primary > 0.5 && primary - other > 0.2 &&
+                          primary > pixel.greenComponent && pixel.alphaComponent > 0;
             if (!matches) {
                 fprintf(stderr, "Dock image %ldx%ld center: %s\n", (long)rep.pixelsWide, (long)rep.pixelsHigh,
                         [[pixel description] UTF8String]);

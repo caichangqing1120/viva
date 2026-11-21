@@ -3,7 +3,11 @@
 package web
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
+	"image"
+	"image/png"
 	"syscall/js"
 	"testing"
 	"time"
@@ -39,16 +43,19 @@ func readImage(t *testing.T) ([]byte, error) {
 	}
 }
 
-const pngHeader = "new Uint8Array([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,1,2,3])"
-
 func TestReadClipboardImagePNG(t *testing.T) {
+	var fixture bytes.Buffer
+	if err := png.Encode(&fixture, image.NewNRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(fixture.Bytes())
 	installClipboard(t, `return { read: () => Promise.resolve([
 		{ types: ["text/plain"], getType: () => Promise.reject(new Error("text")) },
-		{ types: ["image/png"], getType: () => Promise.resolve(new Blob([`+pngHeader+`])) },
+		{ types: ["image/png"], getType: () => Promise.resolve(new Blob([Uint8Array.from(atob("`+encoded+`"), c => c.charCodeAt(0))])) },
 	]) }`)
-	png, err := readImage(t)
-	if err != nil || len(png) != 11 || png[1] != 'P' {
-		t.Fatalf("png = %d bytes, %v", len(png), err)
+	got, err := readImage(t)
+	if err != nil || !bytes.Equal(got, fixture.Bytes()) {
+		t.Fatalf("PNG readback = %d bytes, %v; want %d unchanged bytes", len(got), err, fixture.Len())
 	}
 }
 

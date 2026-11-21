@@ -27,6 +27,7 @@ func TestHideRejectsLateMapButShowRestoresVisibility(t *testing.T) {
 	var visibility []bool
 	renderer := &visibilityTestRenderer{}
 	state := linuxWindowState{
+		application: &linuxApplication{},
 		win: &window{id: 7, api: &xcbAPI{
 			mapWindow: func(uintptr, uint32) xcbVoidCookie {
 				maps++

@@ -26,8 +26,11 @@ type painter struct {
 	paint      func(canvas *gfx.Canvas, size gfx.Size)
 	onPointer  func(gfx.PointerEvent) gfx.EventResult
 	onKey      func(gfx.KeyEvent) gfx.EventResult
-	onShortcut func(gfx.KeyEvent) gfx.EventResult
-	onScroll   func(gfx.ScrollEvent) gfx.EventResult
+	// onDeactivate is the application's, called after a window loses the
+	// activation and the keys that were down are released.
+	onDeactivate func() gfx.EventResult
+	onShortcut   func(gfx.KeyEvent) gfx.EventResult
+	onScroll     func(gfx.ScrollEvent) gfx.EventResult
 	// onModifierTap and tap recognize a modifier pressed and released on its own.
 	onModifierTap func(gfx.ModifierTapEvent) gfx.EventResult
 	tap           input.ModifierTap
@@ -143,6 +146,7 @@ func newPainterWithClock(canvas *gfx.Canvas, config *Config, clock func() time.D
 		paint:         config.Paint,
 		onPointer:     config.OnPointer,
 		onKey:         config.OnKey,
+		onDeactivate:  config.OnDeactivate,
 		onShortcut:    config.OnShortcut,
 		onScroll:      config.OnScroll,
 		onModifierTap: config.OnModifierTap,
@@ -712,6 +716,29 @@ func (painter *painter) focusLostHandler() platform.FocusLostHandler {
 	return painter.focusLost
 }
 
+// deactivateHandler is what a window hands the platform for the loss of the
+// activation: it releases the keys that were down and then tells the
+// application, so the callback sees no key still held.
+func (painter *painter) deactivateHandler() platform.DeactivateHandler {
+	if painter.onDeactivate == nil && painter.onKey == nil && painter.onModifierTap == nil {
+		return nil
+	}
+	return painter.deactivate
+}
+
+func (painter *painter) deactivate() (platform.Frame, error) {
+	painter.tap.Cancel()
+	repaint := painter.releaseKeys()
+	if painter.onDeactivate != nil {
+		response := painter.onDeactivate()
+		repaint = painter.applyEventResult(response) || response.Repaint || repaint
+	}
+	if !repaint {
+		return platform.Frame{}, nil
+	}
+	return painter.repaint()
+}
+
 func (painter *painter) focusLost() (platform.Frame, error) {
 	painter.tap.Cancel()
 	if !painter.releaseKeys() {
@@ -872,7 +899,7 @@ func (painter *painter) repaint() (platform.Frame, error) {
 		painter.noteFrameStart()
 	}
 	painter.paintCanvas()
-	if !painter.focus.PendingFocus().IsZero() || painter.focus.Carries() {
+	if !painter.focus.PendingFocus().IsZero() || painter.focus.Carries() || !painter.canvas.FocusOnce().IsZero() {
 		before, beforeVisible := painter.focus.Focused(), painter.focus.KeyboardFocus()
 		painter.focus.Sync(painter.canvas)
 		if painter.focus.Focused() != before || painter.focus.KeyboardFocus() != beforeVisible {
@@ -963,7 +990,7 @@ func (painter *painter) publish() (platform.Frame, error) {
 	// as it was, so it must not rebuild them.
 	hitStructuresUnchanged := painter.hitStructuresUnchanged()
 	regionsUnchanged := (hitStructuresUnchanged || painter.regionStructuresUnchanged()) &&
-		painter.canvas.FocusRelease().IsZero() && !painter.focus.Carries()
+		painter.canvas.FocusRelease().IsZero() && painter.canvas.FocusOnce().IsZero() && !painter.focus.Carries()
 	if regionsUnchanged {
 		painter.reusedHits++
 	} else {

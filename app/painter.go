@@ -1907,6 +1907,8 @@ func semanticRole(role gfx.Role) semantic.Role {
 		return semantic.RoleStatus
 	case gfx.RoleSeparator:
 		return semantic.RoleSeparator
+	case gfx.RoleProgressBar:
+		return semantic.RoleProgress
 	default:
 		return semantic.RoleButton
 	}

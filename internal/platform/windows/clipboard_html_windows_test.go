@@ -1,10 +1,13 @@
 package windows
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/vivaui/viva/internal/platform"
 )
 
 // TestCFHTMLHeaderPointsAtTheDocument pins the CF_HTML block to the shape
@@ -53,6 +56,18 @@ func TestCFHTMLHeaderPointsAtTheDocument(t *testing.T) {
 	}
 	if !strings.HasSuffix(string(block[startHTML:endHTML]), "</body>\r\n</html>") {
 		t.Fatalf("the document does not end at EndHTML: %q", whole[startHTML:endHTML])
+	}
+}
+
+func TestClipboardSourceIncludesTheWindowsHeaderAndOmitsPadding(t *testing.T) {
+	want := cfHTML("<b>\u6587</b>")
+	block := append(append([]byte(nil), want...), 0, 0, 0)
+	got, err := copyClipboardSource(block, len(want))
+	if string(got) != string(want) || err != nil {
+		t.Fatalf("source = %q, %v; want %q with the header", got, err, want)
+	}
+	if got, err := copyClipboardSource(block, len(want)-1); !errors.Is(err, platform.ErrClipboardSourceTooLarge) || got != nil {
+		t.Fatalf("oversize = %q, %v", got, err)
 	}
 }
 

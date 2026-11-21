@@ -29,6 +29,7 @@ type driverSystem struct {
 	clipboardImage []byte   // PNG bytes; the clipboard holds this or text, never both
 	clipboardFiles []string // paths of copied files, held beside the text a file manager adds
 	clipboardHTML  string   // the rich flavour SetClipboardHTML last wrote beside the plain one
+	clipboardRTF   string   // native RTF source seeded by a driver test
 	primary        string   // the primary selection (Linux only), private like the clipboard
 	schemes        []string // the URL schemes SetSchemeHandlers declared as registered
 	sleepMu        sync.Mutex
@@ -117,9 +118,33 @@ func driverClipboardTextWithFormat() (string, bool, error, bool) {
 // as the plain text, replacing the image and the files. An empty html writes
 // alt as plain text only, like SetClipboard.
 func (driver *Driver) SetClipboardHTML(html, alt string) {
+	driver.SetClipboard(alt)
 	driver.system.clipboardHTML = html
-	driver.clipboard, driver.system.clipboardImage, driver.system.clipboardFiles = alt, nil, nil
-	driver.clipboardRectangular = false
+}
+
+// SetClipboardRTF replaces the driver's clipboard with RTF source beside a
+// plain-text alternative, as a rich copy from another application would.
+func (driver *Driver) SetClipboardRTF(rtf, alt string) {
+	driver.SetClipboard(alt)
+	driver.system.clipboardRTF = rtf
+}
+
+func driverClipboardSource(format ClipboardSourceFormat, limit int) ([]byte, error, bool) {
+	system := activeDriverSystem.Load()
+	if system == nil {
+		return nil, nil, false
+	}
+	value := system.clipboardHTML
+	if format == ClipboardRTFSource {
+		value = system.clipboardRTF
+	}
+	if value == "" {
+		return nil, ErrNoClipboardSource, true
+	}
+	if len(value) > limit {
+		return nil, ErrClipboardSourceTooLarge, true
+	}
+	return []byte(value), nil, true
 }
 
 // ClipboardHTML is the rich flavour the driver's private clipboard holds, ""
@@ -651,7 +676,7 @@ func (driver *Driver) SetClipboardImage(png []byte) error {
 	}
 	driver.system.clipboardImage = append([]byte(nil), png...)
 	driver.system.clipboardFiles = nil
-	driver.clipboard, driver.system.clipboardHTML = "", ""
+	driver.clipboard, driver.system.clipboardHTML, driver.system.clipboardRTF = "", "", ""
 	driver.clipboardRectangular = false
 	return nil
 }
@@ -693,6 +718,6 @@ func (driver *Driver) SetClipboardFiles(paths []string) {
 		}
 		names = append(names, filepath.Base(path)...)
 	}
-	driver.clipboard, driver.system.clipboardHTML = string(names), ""
+	driver.clipboard, driver.system.clipboardHTML, driver.system.clipboardRTF = string(names), "", ""
 	driver.clipboardRectangular = false
 }

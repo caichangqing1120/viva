@@ -1,7 +1,10 @@
 package linux
 
 import (
+	"errors"
 	"testing"
+
+	"github.com/vivaui/viva/internal/platform"
 )
 
 // TestAClipboardHTMLOfferedAsTextHTMLBesideUTF8 pins the selection request
@@ -90,6 +93,12 @@ func TestSetClipboardHTMLClaimsTheBoardAndRefusesBadInput(t *testing.T) {
 	}
 	if !win.ownsClipboard || win.clipboard != "x" || win.clipboardHTML != "<b>x</b>" || len(win.clipboardFiles) != 0 {
 		t.Fatalf("the board holds %q/%q owned=%v files=%d", win.clipboard, win.clipboardHTML, win.ownsClipboard, len(win.clipboardFiles))
+	}
+	if got, err := ClipboardSource(platform.ClipboardHTMLSource, len(win.clipboardHTML)); string(got) != "<b>x</b>" || err != nil {
+		t.Fatalf("read from our own X11 clipboard = %q, %v", got, err)
+	}
+	if _, err := ClipboardSource(platform.ClipboardRTFSource, 16); !errors.Is(err, platform.ErrNoClipboardSource) {
+		t.Fatalf("RTF on HTML-only X11 clipboard = %v", err)
 	}
 	for _, pair := range []struct{ name, html, alt string }{
 		{"html NUL", "a\x00b", "alt"},

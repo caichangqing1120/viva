@@ -35,6 +35,11 @@ func nativeSetClipboardText(value string) error {
 
 func nativeHasClipboardImage() bool { return linuxplatform.HasClipboardImage() }
 
+func nativeClipboardSource(format ClipboardSourceFormat, limit int) ([]byte, error) {
+	value, err := linuxplatform.ClipboardSource(format, limit)
+	return value, linuxSystemError(err)
+}
+
 func nativeClipboardFiles() ([]string, error) {
 	paths, err := linuxplatform.ClipboardFiles()
 	return paths, linuxSystemError(err)

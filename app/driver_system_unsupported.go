@@ -32,6 +32,8 @@ func driverStartFileDrag([]string, platform.DragEffect) (platform.DragEffect, er
 
 func driverSetClipboardHTML(string, string) (error, bool) { return nil, false }
 
+func driverClipboardSource(ClipboardSourceFormat, int) ([]byte, error, bool) { return nil, nil, false }
+
 func driverSendNotification(Notification) (error, bool) { return nil, false }
 
 func driverOpenURL(string) (error, bool)    { return nil, false }

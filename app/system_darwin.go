@@ -20,6 +20,10 @@ func nativeSetClipboardImage(png []byte) error { return darwinplatform.SetClipbo
 
 func nativeClipboardFiles() ([]string, error) { return darwinplatform.ClipboardFiles() }
 
+func nativeClipboardSource(format ClipboardSourceFormat, limit int) ([]byte, error) {
+	return darwinplatform.ClipboardSource(format, limit)
+}
+
 func nativeSetClipboardFiles(paths []string) error { return darwinplatform.SetClipboardFiles(paths) }
 
 func nativeStartFileDrag(paths []string, allowed FileDragEffect) (FileDragEffect, error) {

@@ -10,11 +10,11 @@ import (
 	"github.com/vivaui/viva/text"
 )
 
-// linuxIME connects one window's focused text field to an input method running
-// in the IBus daemon (or in Fcitx5, which speaks the same protocol): the keys the
-// field would receive go to the engine first, and what the engine composes comes
-// back as the same text events a native editor produces, so the field shows the
-// marked text and commits the choice exactly as it does on the other platforms.
+// linuxIME connects one window's focused text field to an input method daemon
+// (IBus, Fcitx5 through its IBus frontend, or Fcitx 4): the keys the field would
+// receive go to the engine first, and what the engine composes comes back as the
+// same text events a native editor produces, so the field shows the marked text
+// and commits the choice exactly as it does on the other platforms.
 //
 // The engine owns the candidate window. All this side does is say when the field
 // has the keyboard and where the caret is.
@@ -58,10 +58,22 @@ type linuxIME struct {
 	hasSources bool
 }
 
-// inputMethodContext is the input context as the window uses it. *ibus.Context
-// is the real one; the interface is the seam tests replace it at.
+// inputMethodKey is one key press or release as the X server reported it: the
+// symbol and keycode, the modifier state, the event time and whether the key
+// came up.
+type inputMethodKey struct {
+	keysym  uint32
+	keycode uint32
+	state   uint32
+	time    uint32
+	release bool
+}
+
+// inputMethodContext is the input context as the window uses it. *fcitx.Context
+// and *ibus.Context (behind a wrapper) are the real ones; the interface is the
+// seam tests replace it at.
 type inputMethodContext interface {
-	ProcessKey(keysym, keycode, state uint32, done func(handled bool)) error
+	ProcessKey(key inputMethodKey, done func(handled bool)) error
 	FocusIn() error
 	FocusOut() error
 	Reset() error
@@ -72,7 +84,7 @@ type inputMethodContext interface {
 
 // newIME gives a window an input context, or nil when there is no daemon.
 func (application *linuxApplication) newIME(win *window, textInput *linuxTextInput, router eventRouter) *linuxIME {
-	if application.inputMethodBus() == nil {
+	if application.inputMethodDaemon() == nil {
 		return nil
 	}
 	ime := &linuxIME{app: application, text: textInput, router: router, origin: win.contentOrigin}
@@ -83,22 +95,10 @@ func (application *linuxApplication) newIME(win *window, textInput *linuxTextInp
 	return ime
 }
 
-// inputMethodBus probes for an IME once at startup. After that the focused
-// field can establish a fresh connection without blocking the event loop.
-func (application *linuxApplication) inputMethodBus() *ibus.Bus {
-	if !application.ibusTried {
-		application.ibusTried = true
-		if bus, err := ibus.Dial(); err == nil {
-			application.ibus = bus
-		}
-	}
-	return application.ibus
-}
-
 // serveInputMethod reads what the daemon sent.
 func (application *linuxApplication) serveInputMethod() {
-	if application.ibus != nil {
-		_ = application.ibus.Dispatch()
+	if application.inputMethod != nil {
+		_ = application.inputMethod.Dispatch()
 		application.checkInputMethod()
 	}
 }
@@ -106,10 +106,10 @@ func (application *linuxApplication) serveInputMethod() {
 // checkInputMethod lets go of a daemon that has failed, or has stopped answering:
 // every window goes back to receiving its keys directly.
 func (application *linuxApplication) checkInputMethod() {
-	if application.ibus == nil || application.ibus.Err() == nil {
+	if application.inputMethod == nil || application.inputMethod.Err() == nil {
 		return
 	}
-	application.ibus = nil
+	application.inputMethod = nil
 	for _, state := range application.windows {
 		if state.router.ime != nil {
 			state.router.ime.lost()
@@ -118,14 +118,20 @@ func (application *linuxApplication) checkInputMethod() {
 	application.rebuildPoll()
 }
 
-// lost abandons the engine without treating a tentative update as a result.
+// lost abandons the engine without committing a tentative or Fcitx 4 preedit.
 func (ime *linuxIME) lost() {
-	cancel := ime.phase != nil && ime.phase.session && ime.sameOwner() && !ime.text.closed
+	_, fcitx := ime.context.(fcitxContext)
+	cancel := ime.sameOwner() && !ime.text.closed &&
+		(ime.phase != nil && ime.phase.session || fcitx && ime.text.state.Composing)
 	ime.clearComposition()
 	ime.dead, ime.active, ime.engineComposing = true, false, false
 	ime.context = nil
 	if cancel {
-		ime.apply(platform.TextEvent{Kind: platform.TextCancelComposition, CompositionPhase: text.CompositionCancel})
+		event := platform.TextEvent{Kind: platform.TextCancelComposition}
+		if ime.phase != nil {
+			event.CompositionPhase = text.CompositionCancel
+		}
+		ime.apply(event)
 	} else if ime.phase == nil && ime.text.state.Composing {
 		ime.apply(platform.TextEvent{Kind: platform.TextUnmark})
 	}
@@ -325,7 +331,7 @@ func (ime *linuxIME) processKeyWithShortcut(keysym uint32, event *xcbInputEvent,
 	}
 	epoch := ime.epoch
 	ime.pendingKeys++
-	err := ime.context.ProcessKey(keysym, uint32(event.Detail)-8, uint32(event.State), func(handled bool) {
+	err := ime.context.ProcessKey(inputMethodKey{keysym: keysym, keycode: uint32(event.Detail), state: uint32(event.State), time: event.Time}, func(handled bool) {
 		if !ime.answerKey(epoch) {
 			return
 		}
@@ -364,7 +370,7 @@ func (ime *linuxIME) pressModifier(keysym uint32, event *xcbInputEvent) {
 	if !ime.current() || !ime.active || !ime.focused || event.Detail < 8 || keysym == 0 {
 		return
 	}
-	if err := ime.sendKey(keysym, uint32(event.Detail)-8, uint32(event.State)); err != nil {
+	if err := ime.sendKey(inputMethodKey{keysym: keysym, keycode: uint32(event.Detail), state: uint32(event.State), time: event.Time}); err != nil {
 		ime.app.checkInputMethod()
 	}
 }
@@ -379,7 +385,7 @@ func (ime *linuxIME) release(keymap *xcbKeymap, event *xcbInputEvent) {
 	if keysym == 0 {
 		return
 	}
-	if err := ime.sendKey(keysym, uint32(event.Detail)-8, uint32(event.State)|ibus.ReleaseMask); err != nil {
+	if err := ime.sendKey(inputMethodKey{keysym: keysym, keycode: uint32(event.Detail), state: uint32(event.State), time: event.Time, release: true}); err != nil {
 		ime.app.checkInputMethod()
 	}
 }
@@ -398,8 +404,9 @@ func (ime *linuxIME) commit(value string) {
 	ime.apply(event)
 }
 
-// preedit shows the text being composed as marked text, or removes it.
-func (ime *linuxIME) preedit(value string, cursor int, visible bool, attrs []ibus.Attribute) {
+// preedit shows the text being composed as marked text, or removes it. Selection
+// is the clause being converted, in characters.
+func (ime *linuxIME) preedit(value string, cursor int, visible bool, selection text.Range) {
 	if !visible || value == "" {
 		ime.engineComposing = false
 		if ime.text.state.Composing {
@@ -411,7 +418,12 @@ func (ime *linuxIME) preedit(value string, cursor int, visible bool, attrs []ibu
 	ime.engineComposing = true
 	length := utf8.RuneCountInString(value)
 	cursor = min(max(cursor, 0), length)
-	ime.apply(platform.TextEvent{Kind: platform.TextSetMarked, Text: value, MarkedSelection: preeditSelection(length, cursor, attrs)})
+	selection.Start = min(max(selection.Start, 0), length)
+	selection.End = min(max(selection.End, 0), length)
+	if selection.End < selection.Start {
+		selection.Start, selection.End = selection.End, selection.Start
+	}
+	ime.apply(platform.TextEvent{Kind: platform.TextSetMarked, Text: value, MarkedSelection: selection})
 }
 
 // preeditSelection is the part of the marked text to show as selected: the clause
@@ -433,8 +445,8 @@ func preeditSelection(length, cursor int, attrs []ibus.Attribute) text.Range {
 
 // forward delivers a key the engine took apart and gave back, such as the Enter
 // that ends a composition, past the engine.
-func (ime *linuxIME) forward(keysym, _ uint32, state uint32) {
-	if state&ibus.ReleaseMask != 0 {
+func (ime *linuxIME) forward(keysym uint32, release bool, state uint32) {
+	if release {
 		return
 	}
 	event := platform.KeyEvent{Key: normalizedKeysym(keysym), Modifiers: xcbModifiers(uint16(state))}

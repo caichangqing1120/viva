@@ -1,6 +1,6 @@
 //go:build linux
 
-package fcitx
+package fcitx5
 
 import (
 	"strings"

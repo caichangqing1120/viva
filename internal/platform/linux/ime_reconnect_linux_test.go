@@ -21,7 +21,7 @@ func TestIMEReconnectWakesOnlyForTheFocusedField(t *testing.T) {
 	ime.lost()
 	attempt := &imeReconnect{ime: ime, span: ime.focusSpan, epoch: ime.epoch,
 		target: ime.text.input.Target, owner: ime.text.state.InputOwner}
-	app.ibusReconnect = attempt
+	app.inputMethodReconnect = attempt
 	if timeout := app.pollTimeout(); timeout != -1 {
 		t.Fatalf("in-flight reconnect scheduled another poll: %d ms", timeout)
 	}
@@ -83,13 +83,14 @@ func TestIMEReconnectRejectsChangedFocusOrEditor(t *testing.T) {
 func TestIMEReconnectDoesNotDispatchUntilAdopted(t *testing.T) {
 	h := newIMEHarness(t)
 	h.focus(t)
-	adopted := false
-	handler := h.ime.handler(h.ime.epoch, func() bool { return adopted })
+	attempt := &imeReconnect{ime: h.ime, epoch: h.ime.epoch}
+	handler := h.ime.ibusHandler(attempt.acceptsCallbacks)
 	handler.Commit("stale")
 	if got := h.editor.String(); got != "" {
 		t.Fatalf("unadopted connection changed the editor: %q", got)
 	}
-	adopted = true
+	h.ime.epoch++
+	attempt.adopted = true
 	handler.Commit("live")
 	if got := h.editor.String(); got != "live" {
 		t.Fatalf("adopted connection did not deliver text: %q", got)

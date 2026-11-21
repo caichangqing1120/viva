@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/ebitengine/purego"
-	"github.com/vivaui/viva/internal/fcitx"
+	fcitx "github.com/vivaui/viva/internal/fcitx5"
 )
 
 type gtkFcitxPopup struct {

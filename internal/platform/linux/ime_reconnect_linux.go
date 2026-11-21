@@ -1,11 +1,11 @@
 package linux
 
 import (
+	"os"
 	"sync"
 	"time"
 
 	"github.com/vivaui/viva/gfx"
-	"github.com/vivaui/viva/internal/ibus"
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/text"
 )
@@ -29,8 +29,8 @@ type imeReconnect struct {
 }
 
 type imeConnection struct {
-	bus     *ibus.Bus
-	context *ibus.Context
+	daemon  inputMethodDaemon
+	context inputMethodContext
 	phases  bool
 }
 
@@ -40,30 +40,30 @@ const (
 )
 
 func (app *linuxApplication) setInputMethodFocus(ime *linuxIME) {
-	if app.ibusResumeFocus != ime {
-		app.ibusResumeFocus = ime
-		app.ibusRetryAt = time.Time{}
-		app.ibusRetryDelay = 0
+	if app.inputMethodFocus != ime {
+		app.inputMethodFocus = ime
+		app.inputMethodRetryAt = time.Time{}
+		app.inputMethodRetryDelay = 0
 	}
 }
 
 func (app *linuxApplication) inputMethodRetryDeadline() (time.Time, bool) {
-	ime := app.ibusResumeFocus
-	return app.ibusRetryAt, app.ibusReconnect == nil && ime != nil && ime.focused && ime.dead &&
+	ime := app.inputMethodFocus
+	return app.inputMethodRetryAt, app.inputMethodReconnect == nil && ime != nil && ime.focused && ime.dead &&
 		!ime.text.closed && ime.text.enabled && !app.quit && app.firstErr == nil
 }
 
 func (app *linuxApplication) delayInputMethodRetry() {
-	app.ibusRetryDelay = max(imeRetryMin, min(imeRetryMax, 2*app.ibusRetryDelay))
-	app.ibusRetryAt = app.timeNow().Add(app.ibusRetryDelay)
+	app.inputMethodRetryDelay = max(imeRetryMin, min(imeRetryMax, 2*app.inputMethodRetryDelay))
+	app.inputMethodRetryAt = app.timeNow().Add(app.inputMethodRetryDelay)
 }
 
 func (app *linuxApplication) startInputMethodReconnect() {
 	if deadline, wanted := app.inputMethodRetryDeadline(); !wanted || app.timeNow().Before(deadline) {
 		return
 	}
-	ime := app.ibusResumeFocus
-	if app.ibus != nil {
+	ime := app.inputMethodFocus
+	if app.inputMethod != nil {
 		// Another window already restored the shared connection.
 		ime.dead = false
 		ime.sync()
@@ -75,21 +75,9 @@ func (app *linuxApplication) startInputMethodReconnect() {
 	state := ime.text.state
 	attempt := &imeReconnect{ime: ime, span: ime.focusSpan, epoch: ime.epoch, target: ime.text.input.Target,
 		owner: state.InputOwner, identity: state.CompositionIdentity, tentative: state.TentativeComposition}
-	app.ibusReconnect = attempt
-	handler := ime.handler(attempt.epoch+1, func() bool { return attempt.adopted })
+	app.inputMethodReconnect = attempt
 	go func() {
-		var connection imeConnection
-		if bus, err := ibus.Dial(); err == nil {
-			if context, err := bus.NewContext("viva", handler); err == nil {
-				phases := attempt.tentative && context.SetClientCommitPreedit(true) == nil
-				if bus.Err() == nil {
-					connection = imeConnection{bus: bus, context: context, phases: phases}
-				}
-			}
-			if connection.bus == nil {
-				bus.Close()
-			}
-		}
+		connection := attempt.connect(dialInputMethod(os.Getenv))
 		attempt.mu.Lock()
 		if attempt.canceled {
 			attempt.mu.Unlock()
@@ -100,6 +88,26 @@ func (app *linuxApplication) startInputMethodReconnect() {
 		attempt.mu.Unlock()
 		app.Post(func() { app.finishInputMethodReconnect(attempt) })
 	}()
+}
+
+func (attempt *imeReconnect) acceptsCallbacks() bool {
+	return attempt.adopted && attempt.ime.contextCurrent(attempt.epoch+1)
+}
+
+func (attempt *imeReconnect) connect(daemon inputMethodDaemon) imeConnection {
+	if daemon == nil {
+		return imeConnection{}
+	}
+	context, err := daemon.open(attempt.ime, attempt.acceptsCallbacks)
+	if err == nil {
+		negotiator, supportsPhases := context.(tentativeInputMethod)
+		phases := attempt.tentative && supportsPhases && negotiator.SetClientCommitPreedit(true) == nil
+		if daemon.Err() == nil {
+			return imeConnection{daemon: daemon, context: context, phases: phases}
+		}
+	}
+	daemon.Close()
+	return imeConnection{}
 }
 
 func (attempt *imeReconnect) matches(ime *linuxIME) bool {
@@ -114,23 +122,23 @@ func (attempt *imeReconnect) matches(ime *linuxIME) bool {
 
 func (app *linuxApplication) finishInputMethodReconnect(attempt *imeReconnect) {
 	connection := attempt.take()
-	if app.ibusReconnect != attempt {
+	if app.inputMethodReconnect != attempt {
 		connection.close()
 		return
 	}
-	app.ibusReconnect = nil
-	ime := app.ibusResumeFocus
-	if ime == nil || !attempt.matches(ime) || app.ibus != nil || app.quit || app.firstErr != nil {
+	app.inputMethodReconnect = nil
+	ime := app.inputMethodFocus
+	if ime == nil || !attempt.matches(ime) || app.inputMethod != nil || app.quit || app.firstErr != nil {
 		connection.close()
 		return
 	}
-	if connection.bus == nil {
+	if connection.daemon == nil {
 		app.delayInputMethodRetry()
 		return
 	}
-	app.ibusRetryAt = time.Time{}
-	app.ibusRetryDelay = 0
-	app.ibus = connection.bus
+	app.inputMethodRetryAt = time.Time{}
+	app.inputMethodRetryDelay = 0
+	app.inputMethod = connection.daemon
 	ime.bindOwner()
 	if !connection.phases {
 		ime.phase = nil
@@ -143,14 +151,14 @@ func (app *linuxApplication) finishInputMethodReconnect(attempt *imeReconnect) {
 }
 
 func (app *linuxApplication) closeInputMethod() {
-	if attempt := app.ibusReconnect; attempt != nil {
-		app.ibusReconnect = nil
+	if attempt := app.inputMethodReconnect; attempt != nil {
+		app.inputMethodReconnect = nil
 		attempt.take().close()
 	}
 	app.setInputMethodFocus(nil)
-	if app.ibus != nil {
-		app.ibus.Close()
-		app.ibus = nil
+	if app.inputMethod != nil {
+		app.inputMethod.Close()
+		app.inputMethod = nil
 	}
 }
 
@@ -164,7 +172,7 @@ func (attempt *imeReconnect) take() imeConnection {
 }
 
 func (connection imeConnection) close() {
-	if connection.bus != nil {
-		connection.bus.Close()
+	if connection.daemon != nil {
+		connection.daemon.Close()
 	}
 }

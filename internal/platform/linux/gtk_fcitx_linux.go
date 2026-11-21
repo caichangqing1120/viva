@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/vivaui/viva/internal/fcitx"
+	fcitx "github.com/vivaui/viva/internal/fcitx5"
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/text"
 )

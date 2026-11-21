@@ -36,55 +36,44 @@ func (ime *linuxIME) current() bool {
 		ime.app.firstErr == nil && !ime.app.quit && ime.sameOwner()
 }
 
+// contextCurrent reports whether a context opened in epoch still belongs to the
+// field. It does not require the context to be published on ime yet: a daemon
+// can send the first update while the context is still being created.
+func (ime *linuxIME) contextCurrent(epoch uint64) bool {
+	return ime.epoch == epoch && !ime.dead && !ime.text.closed && ime.text.enabled &&
+		ime.app.firstErr == nil && !ime.app.quit && ime.sameOwner()
+}
+
 func (ime *linuxIME) keyCurrent(epoch uint64) bool {
 	return ime.epoch == epoch && !ime.text.closed && ime.text.enabled &&
 		(ime.phase == nil || ime.active || ime.dead) && ime.app.firstErr == nil && !ime.app.quit && ime.sameOwner()
 }
 
 func (ime *linuxIME) open() bool {
-	bus := ime.app.inputMethodBus()
-	if bus == nil {
+	daemon := ime.app.inputMethodDaemon()
+	if daemon == nil {
 		return false
 	}
 	ime.bindOwner()
 	ime.epoch++
-	context, err := bus.NewContext("viva", ime.handler(ime.epoch, nil))
+	epoch := ime.epoch
+	context, err := daemon.open(ime, func() bool { return ime.contextCurrent(epoch) })
 	if err != nil {
 		ime.app.checkInputMethod()
 		return false
 	}
 	ime.context = context
-	ime.negotiateTentative(context)
+	if negotiator, ok := context.(tentativeInputMethod); ok {
+		ime.negotiateTentative(negotiator)
+	} else {
+		// Fcitx 4 has no native preedit modes; the context keeps the field's
+		// input through legacy marked-text events.
+		ime.phase = nil
+	}
 	return true
 }
 
-func (ime *linuxIME) handler(epoch uint64, adopted func() bool) ibus.Handler {
-	valid := func() bool {
-		return (adopted == nil || adopted()) && ime.epoch == epoch && ime.current()
-	}
-	return ibus.Handler{
-		Commit: func(value string) {
-			if valid() {
-				ime.commit(value)
-			}
-		},
-		Preedit: func(event ibus.PreeditEvent) {
-			if valid() {
-				ime.nativePreedit(event)
-			}
-		},
-		Forward: func(symbol, code, state uint32) {
-			if valid() {
-				ime.forward(symbol, code, state)
-			}
-		},
-		DeleteSurrounding: func(offset, count int) {
-			if valid() {
-				ime.deleteSurrounding(offset, count)
-			}
-		},
-	}
-}
+type tentativeInputMethod interface{ SetClientCommitPreedit(bool) error }
 
 // negotiateTentative asks the context for native preedit modes. It reports
 // whether explicit phases are available. A refusal is not a failure: the
@@ -129,7 +118,9 @@ func (ime *linuxIME) nativePreedit(event ibus.PreeditEvent) {
 		return
 	}
 	if ime.phase == nil {
-		ime.preedit(event.Text, event.Cursor, event.Visible, event.Attributes)
+		length := utf8.RuneCountInString(event.Text)
+		cursor := min(max(event.Cursor, 0), length)
+		ime.preedit(event.Text, event.Cursor, event.Visible, preeditSelection(length, cursor, event.Attributes))
 		return
 	}
 	phase := ime.phase
@@ -161,7 +152,7 @@ func (ime *linuxIME) reset() error {
 		return ime.app.firstErr
 	}
 	if ime.dead || ime.context == nil || ime.text.closed || ime.app.quit || !ime.sameOwner() {
-		return ibus.ErrClosed
+		return errors.New("linux: the input method is closed")
 	}
 	context, epoch := ime.context, ime.epoch
 	if ime.pendingKeys != 0 {
@@ -193,10 +184,10 @@ func (ime *linuxIME) reset() error {
 	return nil
 }
 
-func (ime *linuxIME) sendKey(symbol, code, state uint32) error {
+func (ime *linuxIME) sendKey(key inputMethodKey) error {
 	epoch := ime.epoch
 	ime.pendingKeys++
-	err := ime.context.ProcessKey(symbol, code, state, func(bool) {
+	err := ime.context.ProcessKey(key, func(bool) {
 		if ime.answerKey(epoch) {
 			ime.finishKey(epoch)
 		}
@@ -212,7 +203,7 @@ func (ime *linuxIME) answerKey(epoch uint64) bool {
 		return false
 	}
 	ime.pendingKeys--
-	if ime.app.ibus != nil && ime.app.ibus.Err() != nil {
+	if ime.app.inputMethod != nil && ime.app.inputMethod.Err() != nil {
 		ime.app.checkInputMethod()
 		if !ime.dead {
 			ime.lost()

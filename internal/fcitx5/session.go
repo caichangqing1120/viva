@@ -2,7 +2,7 @@
 
 // Package fcitx speaks the Fcitx5 input-context protocol on the session bus.
 // A Client is driven by a single event loop; it runs no goroutine.
-package fcitx
+package fcitx5
 
 import (
 	"errors"

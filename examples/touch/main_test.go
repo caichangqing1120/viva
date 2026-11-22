@@ -156,3 +156,66 @@ func skipWithoutTouchRuntime(t *testing.T) {
 		t.Skip("macOS windows do not install the touch gestures")
 	}
 }
+
+// A finger that drags the list down at its start carries it past the start, and it
+// springs back to where it began when the finger lifts.
+func TestTheListGivesAtItsStartAndSpringsBack(t *testing.T) {
+	skipWithoutTouchRuntime(t)
+	m := newModel()
+	driver := open(t, m)
+	_, rest := centerOf(t, driver, "Row 1")
+	x, y := centerOf(t, driver, "Row 5")
+	if err := driver.TouchDown(1, x, y); err != nil {
+		t.Fatal(err)
+	}
+	for step := float32(1); step <= 10; step++ {
+		if err := driver.Advance(10 * time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+		if err := driver.TouchMove(1, x, y+step*15); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, held := centerOf(t, driver, "Row 1")
+	if held <= rest {
+		t.Fatalf("the first row is at %v while the finger holds the list past its start, want it below %v", held, rest)
+	}
+	if held-rest >= 150 {
+		t.Fatalf("the list followed the finger all %v px past its start, want it to give", held-rest)
+	}
+	if err := driver.TouchUp(1, x, y+150); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Advance(2 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, home := centerOf(t, driver, "Row 1"); home != rest {
+		t.Fatalf("the first row is at %v after the finger lifted, want %v", home, rest)
+	}
+	if m.list.Selected() >= 0 {
+		t.Fatalf("the drag chose row %d", m.list.Selected())
+	}
+}
+
+// A finger that lands a little beside a small control presses it, as a fingertip is
+// bigger than the control is drawn.
+func TestAFingerBesideASwitchTurnsItOn(t *testing.T) {
+	skipWithoutTouchRuntime(t)
+	m := newModel()
+	driver := open(t, m)
+	b := control(t, driver, "Notifications").Bounds
+	if b.Height >= 44 && b.Width >= 44 {
+		t.Skip("the switch is already as big as a fingertip")
+	}
+	// Just above the switch, outside what it is drawn as but within the 44 px a fingertip needs.
+	x, y := b.X+b.Width/2, b.Y-3
+	if err := driver.TouchDown(1, x, y); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.TouchUp(1, x, y); err != nil {
+		t.Fatal(err)
+	}
+	if !m.notify {
+		t.Fatal("a finger just beside the switch did not turn it on")
+	}
+}

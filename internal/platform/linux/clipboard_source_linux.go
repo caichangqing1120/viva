@@ -35,7 +35,7 @@ func ClipboardSource(format platform.ClipboardSourceFormat, limit int) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	defer closeClipboardRequest(api, conn, requestor)
+	defer closeClipboardRequest()
 	if owner == xcbAtomNone {
 		return nil, platform.ErrNoClipboardSource
 	}

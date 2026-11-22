@@ -270,9 +270,38 @@ func released(image string) error {
 			return nil
 		}
 		attached = out
+		if redetachAt[attempt] {
+			// The service can keep an image attached, and hold the file, after a detach
+			// that reported success: take its disk away again.
+			if device := diskOf(out, path, image); device != "" {
+				_ = hdiutil("detach", "-force", device)
+			}
+		}
 		pause(releaseWait)
 	}
 	return fmt.Errorf("the disk image service still holds %s after detaching it:\n%s", image, attached)
+}
+
+// redetachAt are the attempts of released at which an image still attached has its disk
+// detached again.
+var redetachAt = map[int]bool{5: true, 20: true, 50: true, 90: true}
+
+var diskNode = regexp.MustCompile(`<string>(/dev/disk\d+)</string>`)
+
+// diskOf is the disk of the attached image at one of the paths, from hdiutil info's
+// list: the first disk its entry names, since an entry lists its image's path before
+// its system entities.
+func diskOf(info string, paths ...string) string {
+	for _, path := range paths {
+		at := strings.Index(info, "<string>"+path+"</string>")
+		if at < 0 {
+			continue
+		}
+		if match := diskNode.FindStringSubmatch(info[at:]); match != nil {
+			return match[1]
+		}
+	}
+	return ""
 }
 
 func hdiutil(arguments ...string) error {
@@ -296,6 +325,15 @@ var (
 // resources beyond the previous ten-second window after detaching its volume.
 const busyAttempts = 10
 
+// transient says a failure of hdiutil is the disk image service being unready rather
+// than a mistake of ours: it is busy or unavailable, or, for create, it lost the staged
+// folder it was just given ("No such file or directory" with the folder there), which
+// is how it answers while the service starts under load. Another run takes.
+func transient(command, output string) bool {
+	return strings.Contains(output, "Resource busy") || strings.Contains(output, "Resource temporarily unavailable") ||
+		command == "create" && strings.Contains(output, "create failed - No such file or directory")
+}
+
 func hdiutilOutput(arguments ...string) (string, error) {
 	for attempt := 1; ; attempt++ {
 		out, err := runHdiutil(arguments...)
@@ -306,8 +344,7 @@ func hdiutilOutput(arguments ...string) (string, error) {
 			return "", errors.New("a .dmg needs hdiutil, which ships with macOS")
 		}
 		// detach has its own way of waiting, which checks whether the volume is gone.
-		if arguments[0] != "detach" && attempt < busyAttempts &&
-			(strings.Contains(string(out), "Resource busy") || strings.Contains(string(out), "Resource temporarily unavailable")) {
+		if arguments[0] != "detach" && attempt < busyAttempts && transient(arguments[0], string(out)) {
 			pause(time.Duration(attempt) * time.Second)
 			continue
 		}

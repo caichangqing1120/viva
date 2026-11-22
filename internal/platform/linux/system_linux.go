@@ -85,12 +85,17 @@ func readSelectionTextX11(name string) (string, error) {
 	}
 	value, accepted, err := readSelection(api, connection, requestor, selection, utf8, property)
 	if err != nil {
+		retireClipboardRequestor()
 		return "", err
 	}
 	if accepted {
 		return value, nil
 	}
-	return readLegacySelection(api, connection, requestor, selection, property)
+	value, err = readLegacySelection(api, connection, requestor, selection, property)
+	if err != nil {
+		retireClipboardRequestor()
+	}
+	return value, err
 }
 
 // HasClipboardImage reports whether the X11 CLIPBOARD owner offers image/png.
@@ -131,7 +136,7 @@ func clipboardOffersImage() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	data, kind, accepted, err := readSelectionBytes(api, connection, requestor, clipboard, targets, property, 1<<16)
+	data, kind, accepted, err := readSharedSelectionBytes(api, connection, requestor, clipboard, targets, property, 1<<16)
 	if err != nil {
 		return false, err
 	}
@@ -185,7 +190,7 @@ func ClipboardImagePNG() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, _, accepted, err := readSelectionBytes(api, connection, requestor, clipboard, png, property, platform.MaxClipboardImageBytes)
+	data, _, accepted, err := readSharedSelectionBytes(api, connection, requestor, clipboard, png, property, platform.MaxClipboardImageBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +241,7 @@ func ClipboardFiles() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, kind, accepted, err := readSelectionBytes(api, connection, requestor, clipboard, targets, property, 1<<16)
+	data, kind, accepted, err := readSharedSelectionBytes(api, connection, requestor, clipboard, targets, property, 1<<16)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +264,7 @@ func ClipboardFiles() ([]string, error) {
 		if !offered[target] {
 			continue
 		}
-		list, _, accepted, err := readSelectionBytes(api, connection, requestor, clipboard, target, property, maxClipboardFileListBytes)
+		list, _, accepted, err := readSharedSelectionBytes(api, connection, requestor, clipboard, target, property, maxClipboardFileListBytes)
 		if errors.Is(err, platform.ErrClipboardImageTooLarge) {
 			return nil, fmt.Errorf("linux: the clipboard's file list is larger than %d MiB", maxClipboardFileListBytes>>20)
 		}
@@ -325,10 +330,13 @@ func ownedClipboardFiles() ([]string, bool) {
 // openSelectionRequest to closeClipboardRequest, so two reads take turns: the
 // replies a read waits for arrive on this connection and only it may take
 // them. A connection the X server dropped is made again by the next read.
+// An interrupted read retires the requestor so late replies cannot reach a
+// later read.
 var selections struct {
 	mu         sync.Mutex
 	api        *xcbAPI
 	connection uintptr
+	screen     *xcbScreen
 	requestor  uint32
 }
 
@@ -344,6 +352,7 @@ func openSelectionRequest(name string) (api *xcbAPI, connection uintptr, request
 	if selections.connection != 0 && selections.api.connectionHasError(selections.connection) != 0 {
 		selections.api.disconnect(selections.connection)
 		selections.connection = 0
+		selections.requestor = 0
 	}
 	if selections.connection == 0 {
 		var screen *xcbScreen
@@ -353,16 +362,20 @@ func openSelectionRequest(name string) (api *xcbAPI, connection uintptr, request
 			return nil, 0, 0, 0, 0, err
 		}
 		api.atoms = make(map[string]uint32, 16)
+		selections.api, selections.connection = api, connection
+		selections.screen = screen
+	}
+	api, connection, requestor = selections.api, selections.connection, selections.requestor
+	if requestor == 0 {
+		screen := selections.screen
 		requestor = api.generateID(connection)
 		// PropertyNotify events pace an INCR transfer: the owner writes each chunk
 		// when the previous one is deleted.
 		eventMask := uint32(xcbEventPropertyChange)
 		api.createWindow(connection, xcbCopyFromParent, requestor, screen.Root, 0, 0, 1, 1, 0, xcbWindowClassInput, screen.RootVisual, xcbCWEventMask, &eventMask)
-		selections.api, selections.connection, selections.requestor = api, connection, requestor
+		selections.requestor = requestor
 	}
-	api, connection, requestor = selections.api, selections.connection, selections.requestor
-	// A reply that came after the read that asked for it gave up is not this
-	// read's answer.
+	// Discard queued notifications from the previous read.
 	for event := api.pollForEvent(connection); event != nil; event = api.pollForEvent(connection) {
 		api.free(event)
 	}
@@ -380,6 +393,22 @@ func openSelectionRequest(name string) (api *xcbAPI, connection uintptr, request
 // next one, and kept.
 func closeClipboardRequest() {
 	selections.mu.Unlock()
+}
+
+// A failed conversion can leave an owner about to reply or write another INCR
+// chunk. The next read must use a new requestor even on the same connection.
+func retireClipboardRequestor() {
+	selections.api.destroyWindow(selections.connection, selections.requestor)
+	selections.api.flush(selections.connection)
+	selections.requestor = 0
+}
+
+func readSharedSelectionBytes(api *xcbAPI, connection uintptr, requestor, selection, target, property uint32, limit int) ([]byte, uint32, bool, error) {
+	data, kind, accepted, err := readSelectionBytes(api, connection, requestor, selection, target, property, limit)
+	if err != nil {
+		retireClipboardRequestor()
+	}
+	return data, kind, accepted, err
 }
 
 // readSelectionBytes asks the selection owner to convert to target and returns

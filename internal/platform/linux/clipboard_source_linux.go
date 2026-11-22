@@ -47,7 +47,7 @@ func ClipboardSource(format platform.ClipboardSourceFormat, limit int) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	offered, kind, ok, err := readSelectionBytes(api, conn, requestor, clipboard, targets, property, 1<<16)
+	offered, kind, ok, err := readSharedSelectionBytes(api, conn, requestor, clipboard, targets, property, 1<<16)
 	if errors.Is(err, platform.ErrClipboardImageTooLarge) {
 		return nil, fmt.Errorf("linux: clipboard target list exceeds the byte limit")
 	}
@@ -66,7 +66,7 @@ func ClipboardSource(format platform.ClipboardSourceFormat, limit int) ([]byte, 
 			if binary.NativeEndian.Uint32(offered[offset:]) != target {
 				continue
 			}
-			data, _, accepted, err := readSelectionBytes(api, conn, requestor, clipboard, target, property, limit)
+			data, _, accepted, err := readSharedSelectionBytes(api, conn, requestor, clipboard, target, property, limit)
 			if errors.Is(err, platform.ErrClipboardImageTooLarge) {
 				return nil, platform.ErrClipboardSourceTooLarge
 			}

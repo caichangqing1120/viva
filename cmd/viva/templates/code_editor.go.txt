@@ -54,6 +54,8 @@ type CodeEditorCaret struct {
 
 type codeExtraCaret struct {
 	row, column int
+	x           float32
+	shaped      bool
 }
 
 // CodeEditorGutterMarker decorates one zero-based logical line with a dot in the
@@ -160,6 +162,15 @@ type CodeEditorSnapshot struct {
 	FontSize float32
 	// MonoFace is the fixed-pitch font the code is set in.
 	MonoFace gfx.MonoFace
+	// ShapedBidi opts grid rows into native bidi shaping where available.
+	// Rows with represented characters use the logical grid, as do editors
+	// showing whitespace or line endings.
+	// Horizontal movement remains caller-owned.
+	ShapedBidi bool
+	// Direction sets the paragraph direction for shaped rows. Auto takes it
+	// from each logical line. RTL aligns shaped and empty rows to the right.
+	// It does not change the gutter or keyboard policy.
+	Direction gfx.TextDirection
 	// TabWidth is the width of a tab stop in cells; zero is four.
 	TabWidth int
 	// Wrap folds a line longer than the box onto several rows. Without it each
@@ -294,6 +305,7 @@ type CodeEditor struct {
 	// there, and otherwise at the start of the next.
 	upstream      bool
 	upstreamCaret int
+	shaping       *codeShaping
 
 	// Scratch kept between paints.
 	runs        []gfx.TextRun
@@ -472,22 +484,30 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 		editor.measureIndents()
 	}
 	editor.content, editor.cellWidth, editor.lineHeight = content, cellWidth, lineHeight
+	editor.configureShaping(canvas, snapshot, size, cellWidth)
 
 	placeholder := value == ""
-	caret := textareaBoundary(value, snapshot.Caret)
+	caret := gridCaretStart(value, snapshot.Caret)
 	selectionStart, selectionEnd := textareaRange(value, snapshot.SelectionStart, snapshot.SelectionEnd)
 	selectionRanges := normalizedSpans(editor.spans, value, snapshot.SelectionRanges)
 	editor.spans = selectionRanges
 	compositionStart, compositionEnd := textareaRange(value, snapshot.CompositionStart, snapshot.CompositionEnd)
 	caretRow := editor.rowOf(caret)
 	caretColumn := editor.columnOf(editor.rows[caretRow], caret)
+	caretX, shapedCaret := editor.shapedCaretX(editor.rows[caretRow], caret)
 	editor.extraCarets = editor.extraCarets[:0]
 	for _, extra := range snapshot.ExtraCarets {
-		offset := textareaBoundary(value, extra.Offset)
+		offset := gridCaretStart(value, extra.Offset)
 		row := editor.rowOf(offset)
-		editor.extraCarets = append(editor.extraCarets, codeExtraCaret{
-			row: row, column: editor.columnOf(editor.rows[row], offset) + max(0, extra.VirtualCells),
-		})
+		virtual := max(0, extra.VirtualCells)
+		x, shaped := editor.shapedCaretX(editor.rows[row], offset)
+		column := editor.columnOf(editor.rows[row], offset) + virtual
+		if shaped {
+			x += float32(virtual) * cellWidth
+		} else {
+			x = float32(column) * cellWidth
+		}
+		editor.extraCarets = append(editor.extraCarets, codeExtraCaret{row: row, column: column, x: x, shaped: shaped})
 	}
 	// ExtraCarets is documented as sorted, but the paint walks them with one
 	// cursor that only moves forward: an out-of-order caller would silently paint
@@ -497,7 +517,7 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 	for i := 1; i < len(editor.extraCarets); i++ {
 		for j := i; j > 0; j-- {
 			left, right := editor.extraCarets[j-1], editor.extraCarets[j]
-			if left.row < right.row || left.row == right.row && left.column <= right.column {
+			if left.row < right.row || left.row == right.row && left.x <= right.x {
 				break
 			}
 			editor.extraCarets[j-1], editor.extraCarets[j] = right, left
@@ -506,7 +526,7 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 	if placeholder {
 		editor.scrollX, editor.scrollY, editor.followedValid = 0, 0, false
 	} else {
-		editor.follow(caret, caretRow, caretColumn)
+		editor.follow(caret, caretRow, caretColumn, caretX, shapedCaret)
 	}
 	editor.painted = true
 
@@ -527,7 +547,7 @@ func (editor *CodeEditor) Paint(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.
 		selectionStart: selectionStart, selectionEnd: selectionEnd,
 		selectionRanges:  selectionRanges,
 		compositionStart: compositionStart, compositionEnd: compositionEnd,
-		caretRow: caretRow, caretColumn: caretColumn,
+		caretRow: caretRow, caretColumn: caretColumn, caretX: caretX, shapedCaret: shapedCaret,
 		showCaret:  showCaret,
 		caretWidth: editorCaretWidth(snapshot.CaretWidth), caretColor: caretColor(snapshot.CaretColor, foreground),
 		lineNumberPadding: lineNumberPadding,
@@ -857,6 +877,9 @@ type codePaint struct {
 	selectionRanges                          []text.Span
 	compositionStart, compositionEnd         int
 	caretRow, caretColumn                    int
+	caretX                                   float32
+	shapedCaret                              bool
+	shapedSpans                              []gfx.TextSpan
 	caretCursor                              int
 	showCaret                                bool
 	caretWidth                               float32
@@ -991,6 +1014,12 @@ func caretColor(requested, text gfx.Color) gfx.Color {
 func (paint *codePaint) row(index int, y float32) {
 	editor, canvas := paint.editor, paint.canvas
 	row := editor.rows[index]
+	if editor.shaping != nil {
+		if carets := editor.shapedRow(row); len(carets) != 0 {
+			paint.shapedRow(index, row, y, carets)
+			return
+		}
+	}
 	left := editor.content.X - editor.scrollX
 	rowStart, rowEnd := int(row.start), int(row.end)
 	if paint.showIndentGuides && editor.firstOfLine(index) {
@@ -1105,16 +1134,21 @@ func (paint *codePaint) row(index int, y float32) {
 		paint.lineEnding(row, y, left)
 	}
 	if paint.showWrapSymbol && editor.softWrapped(index) {
-		canvas.Label("↪", gfx.Rect{
-			X:     editor.content.X + editor.content.Width - paint.cellWidth,
-			Y:     y + (paint.lineHeight-paint.cellHeight)/2,
-			Width: paint.cellWidth, Height: paint.cellHeight,
-		}, gfx.TextStyle{Size: paint.size * 0.75, Color: paint.invisibleColor, Mono: true, MonoFace: paint.face})
+		paint.wrapSymbol(y)
 	}
 
 	if !paint.deferOverlays {
 		paint.overlays(index, y)
 	}
+}
+
+func (paint *codePaint) wrapSymbol(y float32) {
+	content := paint.editor.content
+	paint.canvas.Label("↪", gfx.Rect{
+		X:     content.X + content.Width - paint.cellWidth,
+		Y:     y + (paint.lineHeight-paint.cellHeight)/2,
+		Width: paint.cellWidth, Height: paint.cellHeight,
+	}, gfx.TextStyle{Size: paint.size * 0.75, Color: paint.invisibleColor, Mono: true, MonoFace: paint.face})
 }
 
 func (paint *codePaint) overlays(index int, y float32) {
@@ -1123,15 +1157,26 @@ func (paint *codePaint) overlays(index int, y float32) {
 	rowStart, rowEnd := int(row.start), int(row.end)
 	left := editor.content.X - editor.scrollX
 	if paint.compositionEnd > paint.compositionStart && paint.compositionStart <= rowEnd && paint.compositionEnd >= rowStart {
-		walker := columnWalker{editor: editor, row: row, at: rowStart}
-		first, last := walker.column(max(paint.compositionStart, rowStart)), walker.column(min(paint.compositionEnd, rowEnd))
-		if last > first {
-			canvas.Fill(gfx.Rect{X: left + float32(first)*paint.cellWidth, Y: y + paint.lineHeight - 3, Width: float32(last-first) * paint.cellWidth, Height: 1}, paint.foreground)
+		if carets := editor.shapedRow(row); len(carets) != 0 {
+			shapedLeft := left + editor.shapedRowInset(row)
+			paint.shapedSpans = codeShapedSpans(paint.shapedSpans, carets, paint.compositionStart-rowStart, paint.compositionEnd-rowStart)
+			for _, span := range paint.shapedSpans {
+				canvas.Fill(gfx.Rect{X: shapedLeft + span.X, Y: y + paint.lineHeight - 3, Width: span.Width, Height: 1}, paint.foreground)
+			}
+		} else {
+			walker := columnWalker{editor: editor, row: row, at: rowStart}
+			first, last := walker.column(max(paint.compositionStart, rowStart)), walker.column(min(paint.compositionEnd, rowEnd))
+			if last > first {
+				canvas.Fill(gfx.Rect{X: left + float32(first)*paint.cellWidth, Y: y + paint.lineHeight - 3, Width: float32(last-first) * paint.cellWidth, Height: 1}, paint.foreground)
+			}
 		}
 	}
 
 	if index == paint.caretRow && editor.content.Width > 0 {
 		x := left + float32(paint.caretColumn)*paint.cellWidth
+		if paint.shapedCaret {
+			x = left + paint.caretX
+		}
 		if x >= editor.content.X-1 && x <= editor.content.X+editor.content.Width {
 			editor.caretRect, editor.caretShown = gfx.Rect{X: x, Y: y, Width: paint.caretWidth, Height: paint.lineHeight}, true
 			if paint.showCaret {
@@ -1143,8 +1188,11 @@ func (paint *codePaint) overlays(index int, y float32) {
 		paint.caretCursor++
 	}
 	for paint.caretCursor < len(editor.extraCarets) && editor.extraCarets[paint.caretCursor].row == index {
-		column := editor.extraCarets[paint.caretCursor].column
-		x := left + float32(column)*paint.cellWidth
+		extra := editor.extraCarets[paint.caretCursor]
+		x := left + float32(extra.column)*paint.cellWidth
+		if extra.shaped {
+			x = left + extra.x
+		}
 		if paint.showCaret && editor.content.Width > 0 && x >= editor.content.X-1 && x <= editor.content.X+editor.content.Width {
 			canvas.Fill(gfx.Rect{X: x, Y: y + (paint.lineHeight-paint.cellHeight)/2, Width: paint.caretWidth, Height: paint.cellHeight}, paint.caretColor)
 		}

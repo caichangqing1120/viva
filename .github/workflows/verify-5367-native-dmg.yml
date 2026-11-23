@@ -1,0 +1,50 @@
+name: Verify 5367 native DMG
+
+on:
+  push:
+    branches: [codex/verify-5367-native-dmg]
+
+permissions:
+  contents: read
+
+jobs:
+  disk-image:
+    name: Native DMG (${{ matrix.label }})
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: upstream-pr
+            revision: 0795ab9ac37ae51acb02b7efddfac45a625e4e25
+          - label: vivapad-mirror
+            revision: 21acb1812403763cd3b8ee089fbc103f8df9dc68
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.revision }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Create real disk images and verify the five test results
+        env:
+          EXPECTED_REVISION: ${{ matrix.revision }}
+          VIVA_DISK_IMAGE_TESTS: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+          go test -json ./tools/dmg ./cmd/viva -run 'DiskImage|BuiltImage' -count=1 | tee "$RUNNER_TEMP/dmg-results.json"
+          jq -es '
+            [.[] | select(.Action == "pass" and .Test != null) | .Test] as $passed
+            | [
+                "TestBuiltImageHoldsTheLayoutTheFinderReads",
+                "TestPackageMakesADiskImageHoldingTheBundleAndAnApplicationsLink",
+                "TestADiskImageIsSignedNotarizedAndStapledOnce",
+                "TestDiskImageIsMadeAfterZippedBundleNotarization",
+                "TestDiskImageNotarizationRejectionReportsApplesReasons"
+              ] - $passed | length == 0
+          ' "$RUNNER_TEMP/dmg-results.json"

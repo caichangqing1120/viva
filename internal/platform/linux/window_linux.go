@@ -247,6 +247,7 @@ func RunApplication(start platform.ApplicationStart) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	application := &linuxApplication{}
+	defer stopClipboardWatch()
 	defer application.closeStatus()
 	defer application.atspiClose()
 	defer application.closeDesktop()

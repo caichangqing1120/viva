@@ -9,6 +9,7 @@ import (
 
 	"github.com/vivaui/viva/internal/fcitx"
 	"github.com/vivaui/viva/internal/ibus"
+	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/text"
 )
 
@@ -165,9 +166,17 @@ func (daemon fcitxDaemon) open(ime *linuxIME, current func() bool) (inputMethodC
 			}
 		},
 		Preedit: func(event fcitx.PreeditEvent) {
-			if current() {
-				ime.preedit(event.Text, event.Cursor, event.Visible, text.Range{Start: event.Selection.Start, End: event.Selection.End})
+			if !current() {
+				return
 			}
+			if !event.Visible || event.Text == "" {
+				ime.engineComposing = false
+				if ime.text.state.Composing {
+					ime.apply(platform.TextEvent{Kind: platform.TextCancelComposition})
+				}
+				return
+			}
+			ime.preedit(event.Text, event.Cursor, true, text.Range{Start: event.Selection.Start, End: event.Selection.End})
 		},
 		Forward: func(keysym, state uint32, release bool) {
 			if current() {

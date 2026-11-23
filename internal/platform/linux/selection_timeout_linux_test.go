@@ -23,6 +23,14 @@ func TestTimedOutClipboardReplyCannotSatisfyTheNextRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	targets, err := api.atom(connection, "TARGETS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	utf8Atom, err := api.atom(connection, "UTF8_STRING")
+	if err != nil {
+		t.Fatal(err)
+	}
 	api.setSelectionOwner(connection, window, clipboard, 0)
 	api.flush(connection)
 	if owner, err := selectionOwner(api, connection, clipboard); err != nil || owner != window {
@@ -48,10 +56,14 @@ func TestTimedOutClipboardReplyCannotSatisfyTheNextRead(t *testing.T) {
 		return xcbSelectionRequestEvent{}
 	}
 	reply := func(request xcbSelectionRequestEvent, text string) {
-		api.changeProperty(connection, xcbPropertyReplace, request.Requestor, request.Property, request.Target, 8, uint32(len(text)), unsafe.Pointer(unsafe.StringData(text)))
+		property := uint32(xcbAtomNone)
+		if text != "" {
+			property = request.Property
+			api.changeProperty(connection, xcbPropertyReplace, request.Requestor, property, request.Target, 8, uint32(len(text)), unsafe.Pointer(unsafe.StringData(text)))
+		}
 		notify := xcbSelectionNotifyWire{xcbSelectionNotifyEvent: xcbSelectionNotifyEvent{
 			ResponseType: xcbSelectionNotify, Time: request.Time, Requestor: request.Requestor,
-			Selection: request.Selection, Target: request.Target, Property: request.Property,
+			Selection: request.Selection, Target: request.Target, Property: property,
 		}}
 		api.sendEvent(connection, 0, request.Requestor, 0, (*byte)(unsafe.Pointer(&notify)))
 		api.flush(connection)
@@ -80,18 +92,29 @@ func TestTimedOutClipboardReplyCannotSatisfyTheNextRead(t *testing.T) {
 	}
 	first := read()
 	stale := nextRequest()
+	if stale.Target != targets {
+		t.Fatal("the first read must ask for TARGETS")
+	}
 	if got := await(first); got.err == nil || !strings.Contains(got.err.Error(), "did not respond") {
 		t.Fatalf("first read = %q, %v; want a response timeout", got.text, got.err)
 	}
 	second := read()
 	fresh := nextRequest()
+	if fresh.Target != targets || fresh.Requestor == stale.Requestor {
+		t.Fatalf("next TARGETS request did not use a new window: stale %+v, fresh %+v", stale, fresh)
+	}
 	reply(stale, "expired clipboard value")
 	select {
 	case got := <-second:
 		t.Fatalf("later read consumed a timed-out reply: %q, %v", got.text, got.err)
 	case <-time.After(100 * time.Millisecond):
 	}
-	reply(fresh, "current clipboard value")
+	reply(fresh, "") // Legacy owners do not advertise TARGETS.
+	textRequest := nextRequest()
+	if textRequest.Target != utf8Atom || textRequest.Requestor != fresh.Requestor {
+		t.Fatalf("legacy fallback used an unexpected target or window: %+v", textRequest)
+	}
+	reply(textRequest, "current clipboard value")
 	if got := await(second); got.err != nil || got.text != "current clipboard value" {
 		t.Fatalf("later read = %q, %v; want current clipboard value", got.text, got.err)
 	}

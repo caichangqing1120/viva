@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -54,7 +55,7 @@ func ClipboardText() (string, error) {
 	}
 	if win := activeWindow.Load(); win != nil {
 		win.mu.Lock()
-		if activeWindow.Load() == win && win.connection != 0 && win.ownsClipboard {
+		if activeWindow.Load() == win && win.clipboardOwnedLocked() {
 			value := win.clipboard
 			win.mu.Unlock()
 			return value, nil
@@ -81,23 +82,71 @@ func readSelectionTextX11(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	utf8, err := api.atom(connection, "UTF8_STRING")
+	utf8Atom, err := api.atom(connection, "UTF8_STRING")
 	if err != nil {
 		return "", err
 	}
-	value, accepted, err := readSelection(api, connection, requestor, selection, utf8, property)
+	// Some owners (including xclip) answer unadvertised text requests with
+	// their binary payload. Ask TARGETS first, just as the image reader does,
+	// so an image-only copy reaches TextPasteNoText rather than the editor.
+	targets, err := api.atom(connection, "TARGETS")
 	if err != nil {
-		retireClipboardRequestor()
 		return "", err
 	}
-	if accepted {
-		return value, nil
-	}
-	value, err = readLegacySelection(api, connection, requestor, selection, property)
+	data, kind, accepted, err := readSharedSelectionBytes(api, connection, requestor, selection, targets, property, 1<<16)
 	if err != nil {
-		retireClipboardRequestor()
+		return "", err
 	}
-	return value, err
+	textTarget := utf8Atom
+	wantUTF8, wantLatin1 := true, true
+	if accepted && kind == xcbAtomAtom && len(data)%4 == 0 {
+		mimeUTF8, mimeErr := api.atom(connection, "text/plain;charset=utf-8")
+		if mimeErr != nil {
+			return "", mimeErr
+		}
+		wantUTF8, wantLatin1 = false, false
+		for offset := 0; offset < len(data); offset += 4 {
+			switch binary.NativeEndian.Uint32(data[offset:]) {
+			case utf8Atom:
+				wantUTF8, textTarget = true, utf8Atom
+			case xcbAtomString:
+				wantLatin1 = true
+			case mimeUTF8:
+				// Owners that only offer the MIME spelling of UTF-8 text.
+				if !wantUTF8 {
+					wantUTF8, textTarget = true, mimeUTF8
+				}
+			}
+		}
+	}
+	// Old owners without TARGETS still get the legacy text requests.
+	if wantUTF8 {
+		// A target the owner advertised may answer typed as UTF8_STRING; only the
+		// unadvertised legacy request needs the type check.
+		read := readSelection
+		if textTarget == utf8Atom {
+			read = readTypedSelection
+		}
+		value, accepted, err := read(api, connection, requestor, selection, textTarget, property)
+		if err != nil {
+			retireClipboardRequestor()
+			return "", err
+		}
+		if accepted {
+			if !utf8.ValidString(value) {
+				return "", fmt.Errorf("linux: clipboard text is not valid UTF-8")
+			}
+			return value, nil
+		}
+	}
+	if wantLatin1 {
+		value, err := readLegacySelection(api, connection, requestor, selection, property)
+		if err != nil {
+			retireClipboardRequestor()
+		}
+		return value, err
+	}
+	return "", nil
 }
 
 // HasClipboardImage reports whether the X11 CLIPBOARD owner offers image/png.
@@ -292,7 +341,27 @@ func ownsClipboardText() bool {
 	}
 	win.mu.Lock()
 	defer win.mu.Unlock()
-	return activeWindow.Load() == win && win.connection != 0 && win.ownsClipboard
+	return activeWindow.Load() == win && win.clipboardOwnedLocked()
+}
+
+// SelectionClear can still be queued when a background owner finishes a copy.
+// Check ownership when reading the cache, never on a timer, so an immediate
+// paste cannot return stale text or incorrectly report that no image exists.
+// win.mu is held by the caller.
+func (win *window) clipboardOwnedLocked() bool {
+	if win.connection == 0 || !win.ownsClipboard {
+		return false
+	}
+	owner, err := selectionOwner(win.api, win.connection, win.clipboardAtom)
+	if err != nil {
+		return false
+	}
+	if owner == win.id {
+		return true
+	}
+	win.clipboard, win.clipboardHTML, win.clipboardFiles, win.clipboardImage = "", "", nil, nil
+	win.ownsClipboard = false
+	return false
 }
 
 // ownedClipboardImage is the picture this window's clipboard holds, and whether
@@ -304,7 +373,7 @@ func ownedClipboardImage() ([]byte, bool) {
 	}
 	win.mu.Lock()
 	defer win.mu.Unlock()
-	if activeWindow.Load() != win || win.connection == 0 || !win.ownsClipboard || len(win.clipboardImage) == 0 {
+	if activeWindow.Load() != win || !win.clipboardOwnedLocked() || len(win.clipboardImage) == 0 {
 		return nil, false
 	}
 	return append([]byte(nil), win.clipboardImage...), true
@@ -319,7 +388,7 @@ func ownedClipboardFiles() ([]string, bool) {
 	}
 	win.mu.Lock()
 	defer win.mu.Unlock()
-	if activeWindow.Load() != win || win.connection == 0 || !win.ownsClipboard {
+	if activeWindow.Load() != win || !win.clipboardOwnedLocked() {
 		return nil, false
 	}
 	return append([]string(nil), win.clipboardFiles...), true
@@ -331,13 +400,15 @@ func ownedClipboardFiles() ([]string, bool) {
 // and a round trip per atom for each paste. A read holds mu from
 // openSelectionRequest to closeClipboardRequest, so two reads take turns: the
 // replies a read waits for arrive on this connection and only it may take
-// them. A connection the X server dropped is made again by the next read.
+// them. A connection the X server dropped or whose display changed is made
+// again by the next read.
 // An interrupted read retires the requestor so late replies cannot reach a
 // later read.
 var selections struct {
 	mu         sync.Mutex
 	api        *xcbAPI
 	connection uintptr
+	display    string
 	screen     *xcbScreen
 	requestor  uint32
 }
@@ -351,20 +422,27 @@ func openClipboardRequest() (api *xcbAPI, connection uintptr, requestor, clipboa
 // openSelectionRequest is openClipboardRequest for any selection, by name.
 func openSelectionRequest(name string) (api *xcbAPI, connection uintptr, requestor, selection, owner uint32, err error) {
 	selections.mu.Lock()
-	if selections.connection != 0 && selections.api.connectionHasError(selections.connection) != 0 {
+	display := os.Getenv("DISPLAY")
+	if selections.connection != 0 && (selections.display != display || selections.api.connectionHasError(selections.connection) != 0) {
 		selections.api.disconnect(selections.connection)
 		selections.connection = 0
 		selections.requestor = 0
 	}
+	if display == "" {
+		selections.mu.Unlock()
+		return nil, 0, 0, 0, 0, fmt.Errorf("linux: connect to X server: DISPLAY is empty")
+	}
 	if selections.connection == 0 {
 		var screen *xcbScreen
-		api, connection, screen, err = openSystemConnection()
+		xdisplay := cString(display)
+		api, connection, screen, err = openSystemConnectionAt(&xdisplay[0])
 		if err != nil {
 			selections.mu.Unlock()
 			return nil, 0, 0, 0, 0, err
 		}
 		api.atoms = make(map[string]uint32, 16)
 		selections.api, selections.connection = api, connection
+		selections.display = display
 		selections.screen = screen
 	}
 	api, connection, requestor = selections.api, selections.connection, selections.requestor
@@ -1069,12 +1147,16 @@ func unsupported(detail string) error {
 }
 
 func openSystemConnection() (*xcbAPI, uintptr, *xcbScreen, error) {
+	return openSystemConnectionAt(nil)
+}
+
+func openSystemConnectionAt(display *byte) (*xcbAPI, uintptr, *xcbScreen, error) {
 	api, err := loadXCB()
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	var screenIndex int32
-	connection := api.connect(nil, &screenIndex)
+	connection := api.connect(display, &screenIndex)
 	if connection == 0 || api.connectionHasError(connection) != 0 {
 		if connection != 0 {
 			api.disconnect(connection)
@@ -1111,7 +1193,7 @@ func selectionOwner(api *xcbAPI, connection uintptr, selection uint32) (uint32, 
 }
 
 func readLegacySelection(api *xcbAPI, connection uintptr, requestor, selection, property uint32) (string, error) {
-	value, accepted, err := readSelection(api, connection, requestor, selection, xcbAtomString, property)
+	value, accepted, err := readTypedSelection(api, connection, requestor, selection, xcbAtomString, property)
 	if err != nil || !accepted {
 		return "", err
 	}
@@ -1121,12 +1203,32 @@ func readLegacySelection(api *xcbAPI, connection uintptr, requestor, selection, 
 // readSelection asks the owner for target as text. A text bigger than one property comes in
 // pieces (INCR), as readSelectionBytes collects them.
 func readSelection(api *xcbAPI, connection uintptr, requestor, selection, target, property uint32) (string, bool, error) {
-	data, _, accepted, err := readSelectionBytes(api, connection, requestor, selection, target, property, maxClipboardBytes)
+	return readSelectionText(api, connection, requestor, selection, target, property, false)
+}
+
+// readTypedSelection is readSelection for the clipboard text readers: an owner that answers
+// with another type than the one asked for (a binary payload from an unadvertised request)
+// is treated as having no text.
+func readTypedSelection(api *xcbAPI, connection uintptr, requestor, selection, target, property uint32) (string, bool, error) {
+	return readSelectionText(api, connection, requestor, selection, target, property, true)
+}
+
+func readSelectionText(api *xcbAPI, connection uintptr, requestor, selection, target, property uint32, typed bool) (string, bool, error) {
+	data, kind, accepted, err := readSelectionBytes(api, connection, requestor, selection, target, property, maxClipboardBytes)
 	if errors.Is(err, platform.ErrClipboardImageTooLarge) {
 		return "", false, fmt.Errorf("linux: clipboard text exceeds 64 MiB")
 	}
 	if err != nil || !accepted {
 		return "", false, err
+	}
+	if typed && kind != target {
+		incr, atomErr := api.atom(connection, "INCR")
+		if atomErr != nil {
+			return "", false, atomErr
+		}
+		if kind != incr {
+			return "", false, nil
+		}
 	}
 	return string(data), true, nil
 }

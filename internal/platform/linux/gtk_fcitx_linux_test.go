@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vivaui/viva/gfx"
 	fcitx "github.com/vivaui/viva/internal/fcitx5"
+	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/text"
 )
 
@@ -30,6 +32,62 @@ func TestGtkDirectFcitxDefaultsToMatchingModule(t *testing.T) {
 		if got := gtkDirectFcitxAllowed(test.override, test.module); got != test.want {
 			t.Errorf("override %q module %q: allowed=%t, want %t", test.override, test.module, got, test.want)
 		}
+	}
+}
+
+func TestGTKDirectFcitxWindowBlurCancelsOnlyOwnedPreedit(t *testing.T) {
+	for _, test := range []struct {
+		name                   string
+		tentative, stale, idle bool
+	}{
+		{name: "legacy"},
+		{name: "tentative", tentative: true},
+		{name: "stale owner", tentative: true, stale: true},
+		{name: "idle", tentative: true, idle: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			library := &gtkLibrary{}
+			window := &gtkWindow{app: &gtkApplication{g: library}, g: library}
+			state := platform.TextState{
+				Value: "anic", Selection: text.Range{Start: 3, End: 3},
+				Composition: text.Range{Start: 1, End: 3}, Composing: !test.idle,
+				TentativeComposition: test.tentative,
+				InputOwner:           platform.EditorInputOwner(text.NewEditor("ac")),
+			}
+			ime := &gtkIME{w: window, g: library, ctx: 23, focused: true,
+				session: !test.idle, engineComposing: !test.idle, tentative: test.tentative, editor: state.InputOwner}
+			direct := &gtkDirectFcitx{ime: ime, client: &fcitx.Client{}, owner: 7}
+			window.ime, ime.direct = ime, direct
+			var events []platform.TextEvent
+			window.text = &linuxTextInput{config: &window.config, enabled: true, state: state, input: platform.TextInput{
+				State: state, HideNativeOverlays: true,
+				OnEvent: func(event platform.TextEvent) (platform.TextState, error) {
+					if direct.owner != 0 || direct.current() != 0 {
+						t.Error("the old transport still owns input during cancellation")
+					}
+					events = append(events, event)
+					return state, nil
+				},
+			}}
+			if test.stale {
+				window.text.input.Target = gfx.Scope(1).At(0)
+			}
+			ime.setFocused(false)
+			ime.sync() // Re-presenting the blurred field must not cancel twice.
+			if test.stale || test.idle {
+				if len(events) != 0 {
+					t.Fatalf("unowned or idle blur events = %+v, want none", events)
+				}
+				return
+			}
+			phase := text.CompositionNone
+			if test.tentative {
+				phase = text.CompositionCancel
+			}
+			if len(events) != 1 || events[0].Kind != platform.TextCancelComposition || events[0].CompositionPhase != phase {
+				t.Fatalf("blur events = %+v, want one cancellation with phase %v", events, phase)
+			}
+		})
 	}
 }
 

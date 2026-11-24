@@ -159,7 +159,15 @@ func (daemon fcitxDaemon) Expire()                     { daemon.bus.Expire() }
 func (daemon fcitxDaemon) Close()                      { daemon.bus.Close() }
 
 func (daemon fcitxDaemon) open(ime *linuxIME, current func() bool) (inputMethodContext, error) {
-	context, err := daemon.bus.NewContext("viva", fcitx.Handler{
+	context, err := daemon.bus.NewContext("viva", ime.fcitxHandler(current))
+	if err != nil {
+		return nil, err
+	}
+	return fcitxContext{context}, nil
+}
+
+func (ime *linuxIME) fcitxHandler(current func() bool) fcitx.Handler {
+	return fcitx.Handler{
 		Commit: func(value string) {
 			if current() {
 				ime.commit(value)
@@ -188,11 +196,7 @@ func (daemon fcitxDaemon) open(ime *linuxIME, current func() bool) (inputMethodC
 				ime.deleteSurrounding(offset, count)
 			}
 		},
-	})
-	if err != nil {
-		return nil, err
 	}
-	return fcitxContext{context}, nil
 }
 
 // fcitxContext is a Fcitx context behind the daemon interface. Fcitx wants the

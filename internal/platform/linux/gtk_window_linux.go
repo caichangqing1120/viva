@@ -48,6 +48,7 @@ type gtkWindow struct {
 	cairoSurface  uintptr
 
 	frame       atomic.Pointer[gfx.Rect]
+	decoration  gtkDecorationState
 	maximized   bool
 	fullscreen  atomic.Bool
 	minimized   bool
@@ -479,6 +480,7 @@ func (w *gtkWindow) cleanup() {
 	if w.app.saveDialogOwner == w && w.app.dismissSaveDialog != nil {
 		w.app.dismissSaveDialog()
 	}
+	w.closeDecoration()
 	for _, v := range w.views {
 		v.release()
 	}
@@ -807,6 +809,9 @@ func (w *gtkWindow) reportFrame() {
 		return
 	}
 	w.syncFullscreen()
+	if w.decoration.changing {
+		return
+	}
 
 	window := w.g.widgetGetWindow(w.area)
 	if window == 0 {

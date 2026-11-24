@@ -167,10 +167,22 @@ func (d *gtkDirectFcitx) suspend() {
 	if d.owner == 0 {
 		return
 	}
+	ime, w := d.ime, d.ime.w
+	wasComposing := ime.session
 	d.owner, d.panel = 0, nil
+	ime.session, ime.engineComposing = false, false
 	d.hidePopup()
-	d.ime.session, d.ime.engineComposing = false, false
-	d.receive(d.client.Suspend())
+	err := d.client.Suspend()
+	// The unfocused transport cannot deliver the old context's preedit end.
+	if wasComposing && !ime.focused && w.ime == ime && ime.direct == d &&
+		!w.closed && w.text.enabled && w.text.state.Composing && ime.sameOwner(&w.text.input) {
+		event := platform.TextEvent{Kind: platform.TextCancelComposition}
+		if ime.tentative {
+			event.CompositionPhase = text.CompositionCancel
+		}
+		ime.apply(event)
+	}
+	d.receive(err)
 }
 
 func (d *gtkDirectFcitx) updateCaret() {

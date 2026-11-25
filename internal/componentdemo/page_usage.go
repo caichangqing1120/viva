@@ -4,6 +4,14 @@ package componentdemo
 // documentation site shows it above the examples; a component without an entry
 // is a canvas recipe, used inside ui.Control/Draw or copied by viva add.
 var pageUsage = map[string]string{
+	"steps":         `steps.View(c, "Checkout", &m.step, steps.Spec{Steps: m.stages, Clickable: true})`,
+	"descriptions":  `descriptions.View(c, "Host details", descriptions.Spec{Items: m.details, Columns: 2, Bordered: true})`,
+	"timeline":      `timeline.View(c, "History", timeline.Spec{Items: m.events, Pending: "Waiting"})`,
+	"rate":          `m.rate.View(c, "Rating", &m.score)`,
+	"input-number":  `m.port.View(c, "Port", &m.portValue)`,
+	"date-picker":   `m.due.View(c, "Due date", &m.dueDate)`,
+	"time-picker":   `m.start.View(c, "Start", &m.startAt)`,
+	"transfer":      `m.moves.View(c, "Hosts", transfer.Spec{Items: m.hosts})`,
 	"toggle-group":  `m.toggleGroup.View(c, "Text alignment")`,
 	"empty":         `ui.Column(c).Fill().Center()`,
 	"item":          `ui.Row(c).Gap(8).FillWidth()`,

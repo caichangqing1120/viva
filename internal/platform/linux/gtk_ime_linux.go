@@ -21,6 +21,7 @@ type gtkIME struct {
 	w             *gtkWindow
 	g             *gtkLibrary
 	ctx           uintptr
+	clientWindow  uintptr
 	target        gfx.ID
 	editor        platform.TextInputOwner
 	owner         text.CompositionIdentity
@@ -81,7 +82,25 @@ func (ime *gtkIME) sameOwner(input *platform.TextInput) bool {
 
 // realized gives the context its window, which exists once the toplevel is realized.
 func (ime *gtkIME) realized() {
-	if window := ime.g.widgetGetWindow(ime.w.toplevel); window != 0 {
+	window := ime.g.widgetGetWindow(ime.w.toplevel)
+	if window != 0 && ime.w.wl != nil {
+		if ime.clientWindow == 0 {
+			const gdkWindowChild, gdkInputOnly = 2, 1
+			attrs := gdkWindowAttr{Width: 1, Height: 1, WindowType: gdkWindowChild, Class: gdkInputOnly}
+			ime.clientWindow = ime.g.gdkWindowNew(window, &attrs, 0)
+			if ime.clientWindow != 0 {
+				ime.g.widgetRegisterWindow(ime.w.area, ime.clientWindow)
+				empty := ime.g.cairoRegionRect(&[4]int32{})
+				ime.g.gdkWindowInputShape(ime.clientWindow, empty, 0, 0)
+				ime.g.cairoRegionDestroy(empty)
+				ime.g.gdkWindowShow(ime.clientWindow)
+			}
+		}
+		if ime.clientWindow != 0 {
+			window = ime.clientWindow
+		}
+	}
+	if window != 0 {
 		ime.callContext(ime.ctx, func(context uintptr) { ime.g.imSetClientWindow(context, window) })
 	}
 }
@@ -101,6 +120,11 @@ func (ime *gtkIME) close() {
 		ime.callContext(context, ime.g.imFocusOut)
 	}
 	ime.callContext(context, func(context uintptr) { ime.g.imSetClientWindow(context, 0) })
+	if window := ime.clientWindow; window != 0 {
+		ime.clientWindow = 0
+		ime.g.widgetUnregisterWindow(ime.w.area, window)
+		ime.g.gdkWindowDestroy(window)
+	}
 	ime.w.app.retireIME(context)
 }
 
@@ -243,12 +267,12 @@ func (ime *gtkIME) sync() {
 	ime.updateSurrounding()
 }
 
-// updateCursor tells the input method's window where the caret is, in the toplevel's coordinates.
+// updateCursor tells the input method where the caret is in its client window.
 func (ime *gtkIME) updateCursor() {
 	w := ime.w
 	x, y, width, height := ime.caretRectangle()
-	var left, top int32
-	w.g.widgetTranslate(w.area, w.toplevel, int32(x*w.ratio), int32(y*w.ratio), &left, &top)
+	left, top := int32(x*w.ratio), int32(y*w.ratio)
+	w.g.widgetTranslate(w.area, w.toplevel, left, top, &left, &top)
 	location := [4]int32{left, top, int32(width * w.ratio), int32(height * w.ratio)}
 	if ime.haveCursor && location == ime.cursor {
 		return

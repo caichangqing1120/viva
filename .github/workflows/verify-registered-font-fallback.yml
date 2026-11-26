@@ -1,0 +1,48 @@
+name: Verify registered font fallback
+
+on:
+  push:
+    branches: [codex/verify-registered-font-fallback-56f9fe3a]
+
+permissions:
+  contents: read
+
+jobs:
+  native-fallback:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: amd64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    env:
+      EXPECTED_ARCH: ${{ matrix.arch }}
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 7c81db7d12ff0aaa36a8f4e172a58ff5e21fe0dd
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
+        with:
+          go-version-file: go.mod
+          architecture: ${{ matrix.arch }}
+          cache: false
+      - name: Run the DirectWrite regression on native Windows
+        shell: pwsh
+        run: |
+          if ((go env GOARCH) -ne $env:EXPECTED_ARCH) { throw 'Unexpected Go architecture' }
+          $results = go test -json ./internal/platform/windows -run '^TestRegisteredFontDrawsFallbackCharacters$' -count=1 -timeout=2m
+          if ($LASTEXITCODE -ne 0) {
+            $results | Write-Host
+            exit 1
+          }
+          $results | Write-Host
+          $passed = $results | ForEach-Object { ConvertFrom-Json -InputObject $_ } | Where-Object {
+            $_.Action -eq 'pass' -and $_.Test -eq 'TestRegisteredFontDrawsFallbackCharacters'
+          }
+          if (-not $passed) { throw 'The DirectWrite regression did not run to a pass' }

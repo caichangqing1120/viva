@@ -21,4 +21,10 @@ var groupDComponents = []Component{
 	timePickerComponent,
 	timelineComponent,
 	transferComponent,
+	uploadComponent,
+	anchorComponent,
+	commentComponent,
+	imagePreviewComponent,
+	mentionsComponent,
+	tourComponent,
 }

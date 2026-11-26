@@ -1,6 +1,7 @@
 package components
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -1498,6 +1499,57 @@ func TestCodeEditorYAtOffsetCountsWrappedRows(t *testing.T) {
 	y, _ := f.editor.YAtOffset(strings.Index(value, "next"))
 	if !near(y, float32(rows-1)*line) {
 		t.Errorf("the line after a wrapped one is at %v, want row %d (%v)", y, rows-1, float32(rows-1)*line)
+	}
+}
+
+func TestCodeEditorVisualRowAtY(t *testing.T) {
+	long := "é" + strings.Repeat("abcdefghij", 5)
+	value := long + "\nfolded\nlast\n"
+	f := newCodeFixture(value)
+	if _, ok := f.editor.VisualRowAtY(0); ok {
+		t.Fatal("found a row before layout")
+	}
+	f.bounds.Width = f.widthFor(12) + codeEditorBarSize
+	f.bounds.Height = 50
+	f.snapshot.Wrap = true
+	f.snapshot.FoldedLines = []CodeEditorFoldRange{{Header: 0, LastLine: 1}}
+	f.paint()
+	_, _, height := f.cell()
+	lastStart := strings.Index(value, "last")
+	lastRow := len(f.editor.rows) - 1
+	if lastRow < 4 || f.editor.MaxScrollY() <= 0 {
+		t.Fatal("fixture did not wrap and scroll")
+	}
+	for _, y := range []float32{-1, float32(math.NaN()), float32(math.Inf(1)), float32(lastRow+1) * height} {
+		if span, ok := f.editor.VisualRowAtY(y); ok {
+			t.Fatalf("out-of-range y=%v returned %+v", y, span)
+		}
+	}
+	for _, scroll := range []float32{0, f.editor.MaxScrollY()} {
+		f.editor.SetScrollY(scroll)
+		end := 0
+		for row := range lastRow + 1 {
+			first, ok := f.editor.VisualRowAtY((float32(row) + 0.25) * height)
+			later, laterOK := f.editor.VisualRowAtY((float32(row) + 0.75) * height)
+			if !ok || !laterOK || first != later || first.End > len(value) || first.Start > first.End {
+				t.Fatalf("scroll=%v row=%d returned %+v,%v and %+v,%v", scroll, row, first, ok, later, laterOK)
+			}
+			switch row {
+			case lastRow:
+				if first != (text.Span{Start: len(value), End: len(value)}) {
+					t.Fatalf("final empty row = %+v", first)
+				}
+			case lastRow - 1:
+				if first != (text.Span{Start: lastStart, End: lastStart + len("last")}) || end != len(long) {
+					t.Fatalf("folded source was sampled or wrap lost bytes: end=%d, last=%+v", end, first)
+				}
+			default:
+				if first.Start != end || first.End <= first.Start || first.End > len(long) || !utf8.RuneStart(value[first.Start]) {
+					t.Fatalf("wrapped raw source row %d not contiguous after %d: %+v", row, end, first)
+				}
+				end = first.End
+			}
+		}
 	}
 }
 

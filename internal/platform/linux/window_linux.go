@@ -31,6 +31,7 @@ type window struct {
 	fullscreenHandler         func(bool)
 	minimumSize               *minimumSizeCache
 	mu                        sync.Mutex
+	decorationRequest         *x11DecorationRequest // guarded by mu
 	api                       *xcbAPI
 	connection                uintptr
 	screen                    *xcbScreen
@@ -178,6 +179,8 @@ type linuxWindowState struct {
 	// frameGeometryDirty means a maximization property changed the client-side
 	// margin before its matching ConfigureNotify supplied the final dimensions.
 	frameGeometryDirty bool
+	decorationChange   *x11DecorationChange
+	normalDecoration   *x11DecorationHints
 	// hidden records the application's request, independently of the asynchronous
 	// MapNotify/UnmapNotify events. exposed records that a mapped frame was shown;
 	// it must not suppress later server requests to restore lost pixels.
@@ -868,6 +871,8 @@ func (application *linuxApplication) closeWindow(target *linuxWindowState) {
 	target.renderer.close()
 	target.text.close()
 	target.win.close()
+	target.finishDecorationChange(fmt.Errorf("linux: window closed during decoration change"))
+	target.win.finishDecorationRequest(nil, fmt.Errorf("linux: window closed during decoration change"))
 	application.rebuildPoll()
 	if len(application.windows) == 0 {
 		activeWindow.CompareAndSwap(target.win, nil)
@@ -1042,6 +1047,12 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 			return true, nil
 		}
 	case xcbPropertyNotify:
+		if change := state.decorationChange; change != nil {
+			property := (*xcbPropertyEvent)(event)
+			if property.Window == win.id && property.Atom == change.extents {
+				state.observeDecorationChange()
+			}
+		}
 		if win.incrEvent((*xcbPropertyEvent)(event)) {
 			return false, nil
 		}
@@ -1143,6 +1154,9 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 			win.updateMinimumSizeAt(config, x, y, true)
 		} else {
 			win.updateMinimumSize(config)
+		}
+		if configure.Window == win.id {
+			state.observeDecorationChange()
 		}
 	case xcbButtonPress:
 		inputEvent := (*xcbInputEvent)(event)

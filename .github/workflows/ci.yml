@@ -184,7 +184,7 @@ jobs:
         run: |
           sudo apt-get install -y xvfb libxcb-shape0 libgtk-3-0 ||
             { sudo apt-get update && sudo apt-get install -y xvfb libxcb-shape0 libgtk-3-0; }
-          xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' go test ./internal/platform/linux -run '^Test(PreviewNativeX11Contract|NotificationNativeX11|TrayWindowQueuedRedrawBeforeInput|TrayWindowRepaintsLaterExposure|AFileDragOutReachesAnotherClient)$' -count=1 -v
+          xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' go test ./internal/platform/linux -run '^Test(PreviewNativeX11Contract|NotificationNativeX11|TrayWindowQueuedRedrawBeforeInput|TrayWindowRepaintsLaterExposure|TrayPanelPreservesHostAnchorAtScale|AFileDragOutReachesAnotherClient)$' -count=1 -v
           GDK_BACKEND=x11 VIVA_TEST_GTK_NOTIFICATION=1 xvfb-run -a go test -tags vivagtk ./internal/platform/linux -run '^TestGTKNotificationFocusHints$' -count=1 -v
       - name: Native X11 global shortcut
         env:
@@ -394,6 +394,8 @@ jobs:
         run: go test ./internal/platform/windows -run '^TestATerminalGetsEditingKeysAndChordsAsRawKeys$' -count=1 -v
       - name: Native window and grouped taskbar icons
         run: go test ./internal/platform/windows -run '^TestWindowIconUpdatesOnTheWindowThread$' -count=1 -v
+      - name: Native window decoration changes
+        run: go test ./internal/platform/windows -run '^TestNativeWindowDecoration' -count=1 -v -timeout=90s
       - name: Non-activating desktop notification
         env:
           VIVA_TEST_NOTIFICATION_DESKTOP: '1'
@@ -427,6 +429,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-11-arm
+    env:
+      VIVA_SOFTWARE_RENDERING: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -440,6 +444,8 @@ jobs:
           go test ./internal/platform/windows -run '^Test(DirectTextLayoutOriginByValue|RegisteredFontDrawsFallbackCharacters)$' -count=1 -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test ./internal/platform/windows ./components -run '^Test(Fitted(DirectWrite|WindowsClusters)|CodeEditorDirectWrite)' -count=1 -v
+      - name: Native ARM64 window decoration changes
+        run: go test ./internal/platform/windows -run '^TestNativeWindowDecoration' -count=1 -v -timeout=90s
 
   # A noise-tolerant benchmark regression gate for the pure-Go paths: the base
   # revision and the pull request run the same benchmarks on the same runner,

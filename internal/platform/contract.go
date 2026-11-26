@@ -292,6 +292,9 @@ var ErrFullscreenUnsupported = errors.New("platform: fullscreen is unsupported")
 // above others.
 var ErrAlwaysOnTopUnsupported = errors.New("platform: always-on-top is unsupported")
 
+// ErrWindowDecorationUnsupported means the host cannot change native decorations.
+var ErrWindowDecorationUnsupported = errors.New("platform: live window decorations are unsupported")
+
 // ErrWindowSizeUnsupported means this window kind cannot be resized by the
 // application.
 var ErrWindowSizeUnsupported = errors.New("platform: programmatic window size is unsupported")
@@ -311,6 +314,11 @@ type StatusItem interface {
 	SetIcon(StatusIcon) error
 	// SetTooltip replaces the text shown while the pointer rests on the icon.
 	SetTooltip(string)
+	// SetHover observes native status item entry and exit. A nil handler
+	// restores normal hover behavior. Unsupported hosts return false.
+	SetHover(func(StatusHover)) bool
+	// RefreshMenu publishes changed menu entries to a host that caches them.
+	RefreshMenu()
 	// Remove takes the icon away. It is idempotent and thread-safe.
 	Remove()
 }
@@ -350,6 +358,12 @@ type StatusClick struct {
 	// because of this very press. A click that toggles a panel must not open it
 	// again then.
 	PanelDismissed bool
+}
+
+// StatusHover is a native pointer transition at a status item.
+type StatusHover struct {
+	Anchor  ScreenRect
+	Entered bool
 }
 
 // StatusItemConfig describes a status item. OnClick and Menu run on the native

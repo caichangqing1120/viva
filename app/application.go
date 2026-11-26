@@ -23,6 +23,7 @@ var ErrNoWindows = errors.New("app: application opened no windows")
 // before resize/frame callbacks and repaints afterward.
 // An always-on-top host additionally implements SetAlwaysOnTop(bool) error.
 // A size-capable host additionally implements SetSize(int, int) error.
+// A decoration-capable host additionally implements SetDecorated(bool, func(error)) error.
 type WindowControl interface {
 	Close()
 	Hide()
@@ -376,11 +377,30 @@ func (application *Application) AddStatusItem(config StatusItemConfig) (*StatusI
 	if err := config.Icon.validate(); err != nil {
 		return nil, err
 	}
+	item := &StatusItem{application: application}
+	dismiss := func() {
+		if preview := item.preview.Load(); preview != nil {
+			preview.close()
+		}
+	}
+	if click := config.OnClick; click != nil {
+		config.OnClick = func(event StatusClick) {
+			dismiss()
+			click(event)
+		}
+	}
+	if menu := config.Menu; menu != nil {
+		config.Menu = func() []MenuItem {
+			dismiss()
+			return menu()
+		}
+	}
 	control, err := application.host.AddStatusItem(config)
 	if err != nil {
 		return nil, err
 	}
-	return &StatusItem{control: control}, nil
+	item.control = control
+	return item, nil
 }
 
 // SetDockBadge marks the application's Dock icon with text, the red badge macOS

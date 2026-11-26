@@ -80,6 +80,7 @@ type windowState struct {
 	// pendingTitle is the title SetTitle asked for, applied on the window thread.
 	pendingTitle        titleRequest
 	pendingIcon         iconRequest
+	decoration          windowDecoration
 	fullscreen          atomic.Bool
 	fullscreenChanging  bool
 	fullscreenStyle     uint32
@@ -214,7 +215,7 @@ type nativeWindow struct {
 // reportFrame tells the application where its content area is now, in logical
 // pixels of the window's display. It reports only changes.
 func (state *windowState) reportFrame() {
-	if !state.ready || state.config.OnFrameChange == nil || state.window == 0 || state.iconic() || state.zoomed() || state.fullscreen.Load() || state.fullscreenChanging {
+	if !state.ready || state.config.OnFrameChange == nil || state.window == 0 || state.iconic() || state.zoomed() || state.fullscreen.Load() || state.fullscreenChanging || state.decoration.changing {
 		return
 	}
 	var client rect
@@ -523,6 +524,9 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 	case wmFullscreen:
 		state.setFullscreen(first != 0)
 		return 0
+	case wmChangeDecoration:
+		state.applyDecoration()
+		return 0
 	case wmSetTitle:
 		state.applyTitle()
 		return 0
@@ -639,6 +643,22 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 		}
 		if state.customFrame() {
 			return state.calcSize(first, second)
+		}
+	case wmDPIChanged:
+		if dpi := uint16(first >> 16); !state.scaleFixed && dpi > 0 {
+			state.scale = float32(dpi) / 96
+		}
+		state.configureClicks()
+		// Restoring the initial position can cross monitors before the
+		// renderer is ready. Keep that monitor's scale for the first frame and
+		// take the suggested bounds: placement sized the window at the old
+		// monitor's scale. Nothing is painted or resized yet.
+		if !state.ready {
+			if !state.placingNotification {
+				bounds := (*rect)(pointer(second))
+				setWindowPosition.Call(window, 0, uintptr(bounds.Left), uintptr(bounds.Top), uintptr(bounds.Right-bounds.Left), uintptr(bounds.Bottom-bounds.Top), 0x14)
+			}
+			return 0
 		}
 	}
 	if !state.ready {
@@ -863,10 +883,6 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 		state.serviceResize()
 		return 0
 	case wmDPIChanged:
-		if !state.scaleFixed {
-			state.scale = float32(uint16(first>>16)) / 96
-		}
-		state.configureClicks()
 		state.accessibility.setScale(state.scale)
 		bounds := (*rect)(pointer(second))
 		resizes := state.resizeEvents
@@ -1362,6 +1378,9 @@ func (state *windowState) frameWithTextAndCancel(frame platform.Frame, err error
 func (state *windowState) destroyed(window uintptr) {
 	// Native teardown can reenter the dispatcher; retire text callbacks first.
 	state.ready = false
+	if request := state.decoration.close(); request != nil {
+		defer request.done(fmt.Errorf("windows: window closed before its decoration change completed"))
+	}
 	killTimer.Call(window, resizeTimerID)
 	if state.timerPeriodSet {
 		timeEndPeriod.Call(1)

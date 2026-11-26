@@ -54,8 +54,8 @@ func ClipboardRectangular() bool {
 
 // ClipboardTextWithFormat reads text and its markers while the clipboard is open.
 func ClipboardTextWithFormat() (string, bool, error) {
-	clipboardMu.Lock()
-	defer clipboardMu.Unlock()
+	lockClipboardThread()
+	defer unlockClipboardThread()
 	if opened, _, err := openClipboard.Call(0); opened == 0 {
 		return "", false, windowsCallError("open clipboard", err)
 	}

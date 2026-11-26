@@ -1,14 +1,15 @@
 name: Verify registered font fallback
 
 on:
-  push:
-    branches: [codex/verify-registered-font-fallback-56f9fe3a]
+  pull_request:
+    branches: [codex/vivapad-upstream-ab8b9c18]
 
 permissions:
   contents: read
 
 jobs:
   native-fallback:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/verify-registered-font-fallback-56f9fe3a'
     strategy:
       fail-fast: false
       matrix:

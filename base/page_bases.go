@@ -128,11 +128,12 @@ func SliderBase(c C, state *SliderState) Box {
 //		list.Draw(m.paintPanel) // option i is in sel.Part(i)
 //	}
 func SelectBase[T comparable](c C, Value *T, choices []T, Label func(T) string) Box {
-	return selectOf(c, Value, choices, Label, nil, true, gfx.ID{})
+	return selectOf(c, Value, choices, Label, nil, true, gfx.ID{}, nil)
 }
 
 // TextFieldBase is TextField without a look: the editable text, with no padding,
-// background, border or corners of its own.
-func TextFieldBase[T TextValue](c C, Value T, Label, placeholder string) Box {
-	return textFieldOf(c, Value, Label, placeholder, true)
+// background, border or corners of its own. It takes the options of TextField.
+func TextFieldBase[T TextValue](c C, Value T, Label, placeholder string, opts ...Option) Box {
+	b, _ := textFieldOf(c, Value, Label, placeholder, true, namedBy("TextFieldBase", opts), opts)
+	return b
 }

@@ -36,6 +36,9 @@ type DimKind = base.DimKind
 type Dimension = base.Dimension
 type Direction = base.Direction
 type DragState = base.DragState
+
+// FileDropState is one area that takes files dragged from the system.
+type FileDropState = base.FileDropState
 type DrawContext = base.DrawContext
 type DrawerDeclaration = base.DrawerDeclaration
 type DrawerRects = base.DrawerRects
@@ -107,6 +110,7 @@ type TextValue = base.TextValue
 type ToastID = base.ToastID
 type ToastKind = base.ToastKind
 type ToastPosition = base.ToastPosition
+type ToastConfig = base.ToastConfig
 type Toaster = base.Toaster
 type TooltipSide = base.TooltipSide
 type TreeDrop = base.TreeDrop
@@ -168,6 +172,7 @@ const (
 	PKToaster          = base.PKToaster
 	ProgressHeight     = base.ProgressHeight
 	ProgressWidth      = base.ProgressWidth
+	ProgressRing       = base.ProgressRing
 	ScrollbarLinger    = base.ScrollbarLinger
 	SpinnerStep        = base.SpinnerStep
 	TabIndicator       = base.TabIndicator

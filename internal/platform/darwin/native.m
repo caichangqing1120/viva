@@ -2,6 +2,8 @@
 
 #import "core.h"
 #include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
 #include "cursor_owner_darwin.h"
 #include "label_geometry.h"
 #include "main_menu_darwin.h"
@@ -3538,15 +3540,15 @@ int viva_start_file_promise_drag(intptr_t drag, const viva_drag_item *items, siz
 
 /* A frameless workspace still owns keyboard focus and the application's main
  * window role. A plain borderless NSWindow declines both by default. */
-@interface VivaFramelessWindow : NSWindow
+@interface VivaWorkspaceWindow : NSWindow
 @end
 
-@implementation VivaFramelessWindow
+@implementation VivaWorkspaceWindow
 - (BOOL)canBecomeKeyWindow {
-    return YES;
+    return (self.styleMask & NSWindowStyleMaskTitled) == 0 || [super canBecomeKeyWindow];
 }
 - (BOOL)canBecomeMainWindow {
-    return YES;
+    return (self.styleMask & NSWindowStyleMaskTitled) == 0 || [super canBecomeMainWindow];
 }
 @end
 
@@ -3618,6 +3620,10 @@ int viva_start_file_promise_drag(intptr_t drag, const viva_drag_item *items, siz
     NSMutableArray<NSView *> *_titlebarWatched; /* views whose frame changes re-center the traffic lights */
     BOOL _fullscreenTarget;
     BOOL _fullscreenTransition;
+    BOOL _changingDecoration;
+    NSWindowStyleMask _decoratedStyle;
+    BOOL _decoratedTitlebarTransparent;
+    NSWindowTitleVisibility _decoratedTitleVisibility;
     BOOL _alwaysOnTop;
     BOOL _closeInterceptEnabled;
     BOOL _fileDropEnabled;
@@ -3658,6 +3664,7 @@ int viva_start_file_promise_drag(intptr_t drag, const viva_drag_item *items, siz
 - (void)hideWindow;
 - (void)showWindow;
 - (void)setFullscreen:(BOOL)fullscreen;
+- (int)changeDecoration:(BOOL)decorated;
 - (void)setWindowTitle:(NSString *)title;
 - (void)setAlwaysOnTop:(BOOL)enabled;
 - (BOOL)isFullscreen;
@@ -3784,12 +3791,9 @@ int viva_start_file_promise_drag(intptr_t drag, const viva_drag_item *items, siz
         style |= NSWindowStyleMaskFullSizeContentView;
     }
 
-    Class windowClass = _windowMode == VIVA_WINDOW_PANEL ? [VivaPanel class] : [NSWindow class];
+    Class windowClass = _windowMode == VIVA_WINDOW_PANEL ? [VivaPanel class] : [VivaWorkspaceWindow class];
     if (_windowMode == VIVA_WINDOW_PREVIEW || _windowMode == VIVA_WINDOW_NOTIFICATION) {
         windowClass = [VivaPreview class];
-    }
-    if (_windowMode == VIVA_WINDOW_FRAMELESS) {
-        windowClass = [VivaFramelessWindow class];
     }
     _window = [[windowClass alloc] initWithContentRect:frame
                                              styleMask:style
@@ -4174,7 +4178,7 @@ int viva_start_file_promise_drag(intptr_t drag, const viva_drag_item *items, siz
  * pixels. A live drag reports every intermediate position. */
 - (void)reportFrameChange {
     if (!_frameEventsEnabled || !_running || _callbackHandle == 0 || _window == nil ||
-        _fullscreenTransition || [self isFullscreen]) {
+        _changingDecoration || _fullscreenTransition || [self isFullscreen]) {
         return;
     }
     double frame[4];
@@ -4214,6 +4218,79 @@ int viva_start_file_promise_drag(intptr_t drag, const viva_drag_item *items, siz
 
 - (BOOL)isFullscreen {
     return (_window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+}
+
+- (int)changeDecoration:(BOOL)decorated {
+    if (!_running || !_window.isVisible || _window.isMiniaturized) {
+        return 0;
+    }
+    if ((_windowMode != VIVA_WINDOW_TITLED && _windowMode != VIVA_WINDOW_CUSTOM_TITLEBAR) ||
+        _fullscreenTransition || [self isFullscreen]) {
+        return -1;
+    }
+    if (_changingDecoration || _window.inLiveResize) {
+        return 0;
+    }
+    NSWindowStyleMask before = _window.styleMask;
+    if (((before & NSWindowStyleMaskTitled) != 0) == decorated) {
+        return 1;
+    }
+    NSWindowStyleMask after = decorated ? _decoratedStyle :
+        before & ~(NSWindowStyleMaskTitled | NSWindowStyleMaskFullSizeContentView);
+    if (decorated && (after & NSWindowStyleMaskTitled) == 0) {
+        return -1;
+    }
+
+    NSRect frame = _window.frame;
+    NSRect content = [_window contentRectForFrameRect:frame];
+    NSView *view = _window.contentView;
+    NSResponder *responder = [_window.firstResponder retain];
+    NSInteger number = _window.windowNumber;
+    NSInteger level = _window.level;
+    BOOL key = _window.isKeyWindow;
+    BOOL main = _window.isMainWindow;
+    BOOL transparent = _window.titlebarAppearsTransparent;
+    NSWindowTitleVisibility title = _window.titleVisibility;
+
+    // AppKit sends intermediate move/resize notices when rebuilding the chrome.
+    // The application should never persist those rectangles as its placement.
+    _changingDecoration = YES;
+    _window.styleMask = after;
+    if (decorated) {
+        _window.titlebarAppearsTransparent = _decoratedTitlebarTransparent;
+        _window.titleVisibility = _decoratedTitleVisibility;
+        if (_title != nil) _window.title = _title;
+    }
+    if (!NSEqualRects([_window contentRectForFrameRect:_window.frame], content)) {
+        [_window setFrame:[_window frameRectForContentRect:content] display:NO];
+    }
+    if (_window.firstResponder != responder) [_window makeFirstResponder:responder];
+    BOOL applied = _running && _window.isVisible && _window.styleMask == after &&
+        _window.windowNumber == number && _window.level == level &&
+        _window.contentView == view && _window.firstResponder == responder &&
+        _window.isKeyWindow == key && _window.isMainWindow == main &&
+        NSEqualRects([_window contentRectForFrameRect:_window.frame], content);
+    if (applied && !decorated) {
+        _decoratedStyle = before;
+        _decoratedTitlebarTransparent = transparent;
+        _decoratedTitleVisibility = title;
+    } else if (!applied && _running) {
+        _window.styleMask = before;
+        _window.titlebarAppearsTransparent = transparent;
+        _window.titleVisibility = title;
+        if (_title != nil) _window.title = _title;
+        if (_window.level != level) _window.level = level;
+        if (!NSEqualRects(_window.frame, frame)) [_window setFrame:frame display:NO];
+        if (key && !_window.isKeyWindow) [_window makeKeyWindow];
+        if (main && !_window.isMainWindow) [_window makeMainWindow];
+        if (_window.firstResponder != responder) [_window makeFirstResponder:responder];
+    }
+    if (_windowMode == VIVA_WINDOW_CUSTOM_TITLEBAR && _running) {
+        [self keepTrafficLightsCentered];
+    }
+    _changingDecoration = NO;
+    [responder release];
+    return applied ? 1 : -2;
 }
 
 - (void)setWindowTitle:(NSString *)title {
@@ -4479,7 +4556,7 @@ int viva_start_file_promise_drag(intptr_t drag, const viva_drag_item *items, siz
  * the menu bar at the top of the screen, and kept inside the visible part of the
  * screen the anchor is on. Without an anchor it is centered on the screen. */
 - (void)placePanel {
-    if (_windowMode == VIVA_WINDOW_NOTIFICATION) {
+    if (_windowMode == VIVA_WINDOW_NOTIFICATION && !_hasAnchor) {
         if (_hasOrigin) {
             [self placeAtOrigin];
             return;
@@ -5021,6 +5098,11 @@ int viva_application_set_always_on_top(void *window, int enabled) {
     return found;
 }
 
+// Only called by the Go main-queue callback.
+int viva_application_change_decoration(void *window, int decorated) {
+    return [viva_find_window(window) changeDecoration:decorated != 0];
+}
+
 void viva_application_show_window(void *window) {
     viva_post_window_event(VIVA_SHOW_EVENT, window);
 }
@@ -5151,6 +5233,60 @@ void viva_view_render_sync(void *view) {
     }
     @autoreleasepool {
         [(VivaMetalView *)view renderWaitingForSchedule:YES];
+    }
+}
+
+// VivaTextMenuTarget receives the row chosen from a text menu.
+@interface VivaTextMenuTarget : NSObject
+@property(nonatomic) int chosen;
+- (void)choose:(NSMenuItem *)item;
+@end
+
+@implementation VivaTextMenuTarget
+- (void)choose:(NSMenuItem *)item {
+    self.chosen = (int)item.tag;
+}
+@end
+
+// viva_text_menu_key is the key equivalent AppKit shows beside a command, as its
+// own text fields' menus do.
+static NSString *viva_text_menu_key(int command) {
+    switch (command) {
+    case 1: return @"x";
+    case 2: return @"c";
+    case 3: return @"v";
+    case 4: return @"a";
+    default: return @"";
+    }
+}
+
+int viva_view_popup_text_menu(void *view, int count, const int *commands, const char *const *titles,
+                              const int *disabled, double x, double y) {
+    if (view == NULL || count <= 0) {
+        return 0;
+    }
+    @autoreleasepool {
+        VivaMetalView *target = (VivaMetalView *)view;
+        VivaTextMenuTarget *chosen = [[[VivaTextMenuTarget alloc] init] autorelease];
+        NSMenu *menu = [[[NSMenu alloc] initWithTitle:@""] autorelease];
+        menu.autoenablesItems = NO;
+        for (int index = 0; index < count; index++) {
+            if (commands[index] == 0) {
+                [menu addItem:[NSMenuItem separatorItem]];
+                continue;
+            }
+            NSString *title = [NSString stringWithUTF8String:titles[index] != NULL ? titles[index] : ""];
+            NSMenuItem *item = [[[NSMenuItem alloc] initWithTitle:title action:@selector(choose:)
+                                                    keyEquivalent:viva_text_menu_key(commands[index])] autorelease];
+            item.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+            item.tag = commands[index];
+            item.target = chosen;
+            item.enabled = disabled[index] == 0;
+            [menu addItem:item];
+        }
+        NSPoint location = NSMakePoint(x, target.bounds.size.height - y);
+        [menu popUpMenuPositioningItem:nil atLocation:location inView:target];
+        return chosen.chosen;
     }
 }
 
@@ -5340,7 +5476,28 @@ int viva_unregister_font_file(const char *path) {
     _size = size;
     _scale = MAX(scale, 1.0);
     _clear = clear;
-    _device = MTLCreateSystemDefaultDevice();
+    /* The default stays the system device, which is what a window uses. On
+     * dual-GPU Intel Macs where offscreen Metal renders black with that device,
+     * VIVA_HEADLESS_METAL_DEVICE=low-power opts into the integrated GPU. */
+    const char *deviceOption = getenv("VIVA_HEADLESS_METAL_DEVICE");
+    BOOL preferLowPower = deviceOption != NULL && strcmp(deviceOption, "low-power") == 0;
+    if (deviceOption != NULL && !preferLowPower && strcmp(deviceOption, "default") != 0) {
+        fprintf(stderr, "viva: ignoring VIVA_HEADLESS_METAL_DEVICE=%s (expected default or low-power)\n",
+                deviceOption);
+    }
+    if (preferLowPower) {
+        NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+        for (id<MTLDevice> candidate in devices) {
+            if (candidate.isLowPower) {
+                _device = [candidate retain];
+                break;
+            }
+        }
+        [devices release];
+    }
+    if (_device == nil) {
+        _device = MTLCreateSystemDefaultDevice();
+    }
     _queue = _device != nil ? [_device newCommandQueue] : nil;
     if (_queue == nil || library == NULL || length == 0) {
         [self release];

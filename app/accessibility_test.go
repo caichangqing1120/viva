@@ -229,3 +229,58 @@ func TestRegionsNeverReportTheKeyboard(t *testing.T) {
 		t.Errorf("region = %+v", painter.accessibility[0])
 	}
 }
+
+func TestSyncSemanticsUpdatesZeroIDContainerOnIncrementalPaint(t *testing.T) {
+	var canvas gfx.Canvas
+	width := float32(912)
+	role := gfx.RoleStatus
+	label := "Loading"
+	config := Config{
+		Title:  "a11y-container-incremental",
+		Width:  960,
+		Height: 200,
+		Paint: func(canvas *gfx.Canvas, _ gfx.Size) {
+			canvas.ContainerWithOptions(gfx.Rect{Width: width, Height: 24}, role, label, gfx.HitOptions{Level: 1})
+			canvas.HitWithLabel(gfx.Item(1), gfx.Rect{Y: 40, Width: 80, Height: 24}, "Save")
+		},
+	}
+	driver, err := NewDriver(config, &canvas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+
+	// Frame 2: only the zero-ID container changes bounds, role and label; hit count and IDs stay identical.
+	width = 904
+	role = gfx.RoleGroup
+	label = "Article A"
+	if err := driver.redraw(); err != nil {
+		t.Fatal(err)
+	}
+	nodes := driver.Accessibility()
+	if len(nodes) == 0 || nodes[0].Bounds.Width != 904 || nodes[0].Role != gfx.RoleGroup || nodes[0].Label != "Article A" {
+		t.Fatalf("stale zero-ID container accessibility node: %+v", nodes)
+	}
+}
+
+// A pointer region over painted words (a selectable text's) is no node of its own and
+// takes no focus, while the control it belongs to stays one.
+func TestPresentationalHitsAreNoAccessibilityNodes(t *testing.T) {
+	var canvas gfx.Canvas
+	config := Config{Title: "presentational", Width: 200, Height: 120}
+	config.Paint = func(canvas *gfx.Canvas, size gfx.Size) {
+		canvas.HitWithOptions(gfx.Item(1), gfx.Rect{Width: 200, Height: 100}, "", gfx.HitOptions{Role: gfx.RoleGroup, SkipTab: true})
+		canvas.HitWithOptions(gfx.Item(2), gfx.Rect{Y: 10, Width: 120, Height: 16}, "", gfx.HitOptions{
+			Role: gfx.RoleGroup, Cursor: gfx.PointerCursorText, Presentational: true,
+		})
+	}
+	painter := newTestPainter(t, &canvas, config)
+	if len(painter.accessibility) != 1 || painter.accessibility[0].ID != gfx.Item(1) {
+		t.Fatalf("accessibility = %+v", painter.accessibility)
+	}
+	for _, hit := range canvas.Hits() {
+		if hit.ID == gfx.Item(2) && (hit.Focusable || hit.Cursor != gfx.PointerCursorText) {
+			t.Fatalf("the pointer region is %+v", hit)
+		}
+	}
+}

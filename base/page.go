@@ -168,6 +168,7 @@ const (
 	pkDisclosure
 	pkProgress
 	pkAlertDialog
+	pkTextSelection
 	pkKinds
 )
 
@@ -222,6 +223,17 @@ type PageConfig struct {
 	// keeps the thin hover default. It is the page's one place for the weight its
 	// bars share.
 	ScrollbarSize float32
+	// EllipsisTooltips shows the complete value of text shortened with an
+	// ellipsis in a tooltip while the pointer rests on it: a Text cut by Ellipsis
+	// or MaxLines, and the labels components shorten themselves, such as Table
+	// cells, Select values and menu items. It is off by default, which paints
+	// such text as before; Box.EllipsisTooltip turns it on or off for part of the
+	// page. The tooltip opens below the text, or beside the side
+	// Box.EllipsisTooltipOn gives. Over the text, this tooltip takes the place of
+	// the Tooltip of the element the text is in. Only the pointer shows it, not
+	// keyboard focus; it is not in the accessibility tree, where a control keeps
+	// its complete name and value whatever its drawing shortens.
+	EllipsisTooltips bool
 	// Invalidator wakes the window the page is drawn in when an Effect of the page
 	// finishes. Configure uses it instead of the app.Config's; a page the application
 	// draws into a window of its own (Draw, not Paint) needs it, since only Config
@@ -237,6 +249,13 @@ type PageConfig struct {
 	// that keeps using Button, Checkbox, Switch, Input and Textarea rather than
 	// their Bases, and it does not affect a control given a look of its own.
 	Styles *Styles
+	// EditMenu points at the words of the menu a TextField or TextArea opens on a
+	// secondary press, as Theme points at the colors: the application changes them
+	// when its language does. Nil, and a label left empty, are English.
+	EditMenu *EditMenuLabels
+	// CanvasMenus keeps the menu of a TextField or TextArea the page's own, drawn
+	// in the window, where the platform would show the system's.
+	CanvasMenus bool
 }
 
 // Page is a window's declaration: one tree for the whole window. A Page lives
@@ -288,18 +307,23 @@ type Page struct {
 	groupIDs    []gfx.ID              // their members, in order
 	groupStops  map[gfx.ID]groupStop  // the member each group has the Tab stop on
 	contexts    []contextTarget       // the ContextMenus of the last paint, which Shift+F10 opens
+	editMenus   []editMenuEntry       // the fields of the last paint that have the standard edit menu
+	editFocus   gfx.ID                // the field whose edit menu item was chosen, which takes the keyboard in the next paint
 	combos      []*ComboState         // the Comboboxes of the last paint
 	trees       []*TreeState          // the Trees of the last paint
 	drags       []*DragState          // the DragStates of the last paint
 	drag        *DragState            // the one following a press, if any
+	fileDrops   []*FileDropState      // the areas of the last paint that take files from the system
 	listStates  []*ListState          // the Lists of the last paint
 	splitters   []*SplitterState      // the Splitters of the last paint
 	tables      []tableRoute          // the Tables of the last paint, for the wheel and keys under the pointer
 	pointer     gfx.Point             // where the pointer was at the last pointer event
 	pointerIn   bool                  // a pointer event put it there, and no exit has taken it away
 	hoverArea   gfx.ID                // the scroll area or self-scrolling table the pointer is on
-	selects     []*SelectState        // the Selects of the last paint, which Wheel scrolls
-	labels      []string              // scratch for Choice's labels
+	hoverText   gfx.HoverHint         // the hint under the pointer at the last paint or pointer event; changes wake a page even when text has no pointer target
+	pointerDown bool
+	selects     []*SelectState // the Selects of the last paint, which Wheel scrolls
+	labels      []string       // scratch for Choice's labels
 	memos       map[gfx.ID]*memoEntry
 	memoBoxes   []memoBox
 	memoChecks  []memoCheckOf
@@ -319,6 +343,7 @@ type Page struct {
 	baseKey      func(gfx.KeyEvent) gfx.EventResult
 	basePointer  func(gfx.PointerEvent) gfx.EventResult
 	baseShortcut func(gfx.KeyEvent) gfx.EventResult
+	baseFileDrop func(gfx.FileDropEvent) gfx.EventResult
 	// keyRoute, pointerRoute, areaKey and shortcutRoute are set by the first
 	// Control, TextArea or Shortcut a page declares, so a page without them does
 	// not link what routes their input.
@@ -567,6 +592,12 @@ func (p *Page) onKey(event gfx.KeyEvent) gfx.EventResult {
 
 func (p *Page) onPointer(event gfx.PointerEvent) gfx.EventResult {
 	switch event.Kind {
+	case gfx.PointerDown:
+		p.pointerDown = true
+	case gfx.PointerUp, gfx.PointerExit:
+		p.pointerDown = false
+	}
+	switch event.Kind {
 	case gfx.PointerMove, gfx.PointerDown, gfx.PointerUp:
 		p.pointer, p.pointerIn = gfx.Point{X: event.X, Y: event.Y}, true
 	case gfx.PointerExit:
@@ -586,6 +617,12 @@ func (p *Page) onPointer(event gfx.PointerEvent) gfx.EventResult {
 		p.hoverArea = p.hoverPlaceAt(p.pointer.X, p.pointer.Y)
 	}
 	entered := wasArea != p.hoverArea
+	var text gfx.HoverHint
+	if p.View.Frame != nil {
+		text = p.hoverTextOn(p.View.Frame.Surface)
+	}
+	textChanged := !text.SameText(p.hoverText)
+	p.hoverText = text
 	var result gfx.EventResult
 	if done, ok := p.dropPointer(event); ok {
 		result = done
@@ -598,7 +635,8 @@ func (p *Page) onPointer(event gfx.PointerEvent) gfx.EventResult {
 	} else if p.basePointer != nil {
 		result = p.basePointer(event)
 	}
-	result.Repaint = result.Repaint || entered
+	result.Repaint = result.Repaint || entered || textChanged ||
+		text.Text != "" && (event.Kind == gfx.PointerDown || event.Kind == gfx.PointerUp)
 	return result
 }
 
@@ -700,6 +738,7 @@ type Host struct {
 	OnKey      func(gfx.KeyEvent) gfx.EventResult
 	OnShortcut func(gfx.KeyEvent) gfx.EventResult
 	OnPointer  func(gfx.PointerEvent) gfx.EventResult
+	OnFileDrop func(gfx.FileDropEvent) gfx.EventResult
 }
 
 // Attach wires the page into a host: the page adopts or keeps the tree, paints
@@ -712,6 +751,7 @@ func (p *Page) Attach(h *Host) {
 	p.basePointer, h.OnPointer = h.OnPointer, p.onPointer
 	p.baseShortcut, h.OnShortcut = h.OnShortcut, p.onShortcut
 	p.baseScroll, h.OnScroll = h.OnScroll, p.Wheel
+	p.baseFileDrop, h.OnFileDrop = h.OnFileDrop, p.onFileDrop
 }
 
 // Init prepares the page's identity tree from the host's, or a new one.
@@ -815,12 +855,16 @@ func (p *Page) paintOnce(Surface *gfx.Canvas, bounds Rect, View func(C)) {
 	p.groups, p.groupIDs = p.groups[:0], p.groupIDs[:0]
 	clear(p.contexts)
 	p.contexts = p.contexts[:0]
+	clear(p.editMenus)
+	p.editMenus = p.editMenus[:0]
 	clear(p.combos)
 	p.combos = p.combos[:0]
 	clear(p.trees)
 	p.trees = p.trees[:0]
 	clear(p.drags)
 	p.drags = p.drags[:0]
+	clear(p.fileDrops)
+	p.fileDrops = p.fileDrops[:0]
 	clear(p.listStates)
 	p.listStates = p.listStates[:0]
 	clear(p.tables)
@@ -842,6 +886,7 @@ func (p *Page) paintOnce(Surface *gfx.Canvas, bounds Rect, View func(C)) {
 	p.ctx.page, p.ctx.f, p.ctx.nextSet = p, f, false
 	p.Nodes = append(p.Nodes[:0], protoNode{scope: p.root, named: true, parentNode: -1}) // node 0, the root column
 	View(&p.ctx)
+	p.declareEditMenus(&p.ctx)
 	f.End()
 	if p.settleContainers() {
 		p.retry = true

@@ -91,6 +91,9 @@ type SelectItem struct {
 	Hint     string
 	Selected bool
 	Disabled bool
+	// Heading paints the row as a group heading: the label muted and set small, with no
+	// hover, no hit and no check, in the same row height as an option.
+	Heading bool
 	// Icon, when it has any geometry, is painted before the label.
 	Icon gfx.Icon
 	// IconImage is a full-color image in the icon slot when Icon is empty.
@@ -270,6 +273,20 @@ func (selectControl *Select) AddLabel(label string) gfx.Rect {
 // is empty when the row is scrolled out of the popup.
 func (selectControl *Select) AddItem(item SelectItem) gfx.Rect {
 	bounds := selectControl.rowBounds(32)
+	if item.Heading {
+		if !selectControl.reserve(bounds) {
+			return gfx.Rect{}
+		}
+		selectControl.rows.paintRow(bounds, func() {
+			if selectControl.options.Unpainted {
+				return
+			}
+			selectControl.canvas.Label(item.Label, gfx.Rect{X: bounds.X + 8, Y: bounds.Y, Width: selectMax(0, bounds.Width-16), Height: bounds.Height}, gfx.TextStyle{
+				Size: selectControl.theme.Metrics.FontSizeS, Weight: gfx.WeightMedium, Color: selectControl.theme.MutedForeground,
+			})
+		})
+		return bounds
+	}
 	if !selectControl.open || !selectControl.rows.takeItem(bounds, item.ID, item.Label, item.Disabled) {
 		return gfx.Rect{}
 	}
@@ -355,9 +372,9 @@ func (selectControl Select) paintTrigger() {
 			if options.Weight > 0 {
 				weight = options.Weight
 			}
-			canvas.Label(value, gfx.Rect{X: textX, Y: bounds.Y, Width: selectMax(0, textWidth), Height: bounds.Height}, gfx.TextStyle{
+			canvas.LabelOrEllipsis(value, gfx.Rect{X: textX, Y: bounds.Y, Width: selectMax(0, textWidth), Height: bounds.Height}, gfx.TextStyle{
 				Size: textSize, Weight: weight, Color: foreground,
-			})
+			}, options.TriggerID)
 		}
 		paintChevron(canvas, &chevronDownIcon, gfx.Rect{X: bounds.X + bounds.Width - chevronSpan, Y: bounds.Y, Width: selectIconSize, Height: bounds.Height}, chevron)
 	}
@@ -386,9 +403,9 @@ func (selectControl *Select) paintItem(bounds gfx.Rect, item SelectItem) {
 			textX += SelectIconSpan
 			textWidth -= SelectIconSpan
 		}
-		selectControl.canvas.Label(item.Label, gfx.Rect{X: textX, Y: bounds.Y, Width: selectMax(0, textWidth), Height: bounds.Height}, gfx.TextStyle{
+		selectControl.canvas.LabelOrEllipsis(item.Label, gfx.Rect{X: textX, Y: bounds.Y, Width: selectMax(0, textWidth), Height: bounds.Height}, gfx.TextStyle{
 			Size: selectControl.theme.Metrics.FontSizeM, Weight: gfx.WeightRegular, Color: foreground,
-		})
+		}, item.ID)
 		if item.Selected {
 			paintCheck(selectControl.canvas, gfx.Rect{X: bounds.X + bounds.Width - 24, Y: bounds.Y, Width: 14, Height: bounds.Height}, 14, foreground)
 		}

@@ -84,6 +84,7 @@ func (f *Frame) measure(axis int) {
 			f.measureLeaf(n)
 		}
 		if n.Kind == kindText && n.Flags&flagWrap != 0 && axis == AxisY {
+			n.TextDecor &^= textTruncated
 			first := int32(len(f.Lines))
 			// An empty text has no line at all, as WrapLines gives it none; anything
 			// else that fits is one line and needs no breaking.
@@ -248,7 +249,7 @@ func (n *Node) stretches(axis int) bool {
 	case kindSlider:
 		return (n.Natural > 0) == (axis == AxisY) // as long as its container, never as thick
 	case kindProgress:
-		return axis == AxisX // a bar is as wide as its column, but a row does not make it tall
+		return axis == AxisX && !n.Circle // a bar is as wide as its column, but a row does not make it tall; a ring keeps its size
 	case kindContainer, kindText, kindSpacer, kindSlot, kindInput, kindInputGroup, kindTextarea, kindSegmented, kindTable, kindTabs, kindSelect, kindSplitter:
 		return true
 	}

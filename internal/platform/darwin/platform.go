@@ -15,6 +15,7 @@ import "C"
 import (
 	"fmt"
 	"runtime/cgo"
+	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 	"unsafe"
@@ -148,12 +149,15 @@ func (window *nativeWindow) SetAlwaysOnTop(enabled bool) error {
 }
 
 type runState struct {
-	application       *nativeApplication
-	callbackHandle    cgo.Handle
-	onClosed          func()
-	waker             *platform.Waker
-	closed            bool
-	pointerHandler    PointerHandler
+	application    *nativeApplication
+	window         *nativeWindow
+	callbackHandle cgo.Handle
+	onClosed       func()
+	waker          *platform.Waker
+	closed         bool
+	pointerHandler PointerHandler
+	// takeTextMenu is the runtime's text menu for the press just delivered.
+	takeTextMenu      func() (platform.TextMenuRequest, bool)
 	pressAt           func(x, y float32) platform.PressKind
 	resizeHandler     ResizeHandler
 	frameHandler      platform.FrameChangeHandler
@@ -204,8 +208,33 @@ type nativeApplication struct {
 }
 
 type nativeWindow struct {
-	token  unsafe.Pointer
-	closed atomic.Bool
+	token        unsafe.Pointer
+	closed       atomic.Bool
+	mode         WindowMode
+	decorationMu sync.Mutex
+	decoration   *decorationRequest
+}
+
+type decorationRequest struct {
+	done func(error)
+}
+
+func (window *nativeWindow) finishDecoration(request *decorationRequest, err error) {
+	window.decorationMu.Lock()
+	pending := window.decoration
+	if request != nil && pending != request {
+		window.decorationMu.Unlock()
+		return
+	}
+	window.decoration = nil
+	var done func(error)
+	if pending != nil {
+		done, pending.done = pending.done, nil
+	}
+	window.decorationMu.Unlock()
+	if done != nil {
+		done(err)
+	}
 }
 
 func (window *nativeWindow) Close() {
@@ -367,6 +396,7 @@ func (application *nativeApplication) OpenWindow(config Config) (platform.Window
 	state := &runState{application: application, onClosed: config.OnClosed, waker: config.Waker, closeHandler: config.OnCloseRequest, pressAt: config.PressAt,
 		frameHandler: config.OnFrameChange, minimizeHandler: config.OnMinimize, visibilityHandler: config.OnVisibility, fullscreenHandler: config.OnFullscreen, onReopen: config.OnReopen, onActivate: config.OnActivate}
 	state.pointerHandler = config.OnPointer
+	state.takeTextMenu = config.TakeTextMenu
 	state.resizeHandler = config.OnResize
 	state.keyHandler = config.OnKey
 	state.focusLostHandler = config.OnFocusLost
@@ -464,6 +494,10 @@ func (application *nativeApplication) OpenWindow(config Config) (platform.Window
 		return nil, nativeStatusError(C.viva_application_last_status())
 	}
 	application.windows++
+	if config.Transparent && config.OnTransparentChange != nil {
+		// The Metal layer and the window turn non-opaque for any clear alpha below one.
+		config.OnTransparentChange(config.ClearColor.Alpha < 1)
+	}
 	setApplicationIcon(config.Icon)
 	if config.SetFrameInterval != nil {
 		// Metal's nextDrawable blocks once both drawables are in flight, so the
@@ -476,7 +510,8 @@ func (application *nativeApplication) OpenWindow(config Config) (platform.Window
 			C.viva_web_ready_later(C.uintptr_t(state.callbackHandle))
 		}
 	}
-	return &nativeWindow{token: token}, nil
+	state.window = &nativeWindow{token: token, mode: config.WindowMode}
+	return state.window, nil
 }
 
 func nativeStatusError(status C.int) error {

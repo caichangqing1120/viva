@@ -28,7 +28,7 @@ func PaintTextarea(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.Rect, snapsho
 		return bounds
 	}
 	focused := !snapshot.Disabled && (snapshot.Focused || !snapshot.ID.IsZero() && canvas.Focused() == snapshot.ID)
-	paintTextEntrySurface(canvas, &theme, bounds, gfx.State{Focused: focused, Invalid: snapshot.Invalid, Disabled: snapshot.Disabled})
+	paintTextEntrySurface(canvas, &theme, bounds, gfx.State{Focused: focused, Invalid: snapshot.Invalid, Warning: snapshot.Warning, Disabled: snapshot.Disabled})
 	inset := theme.Metrics.TextInsetX()
 	area := gfx.Rect{X: bounds.X + inset, Y: bounds.Y + textareaPadY, Width: textareaMax(0, bounds.Width-2*inset), Height: textareaMax(0, bounds.Height-2*textareaPadY)}
 	paintTextareaContent(canvas, theme, bounds, area, snapshot, focused)
@@ -274,7 +274,12 @@ func textareaPaintRows(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.Rect, val
 			if snapshot.Disabled {
 				selectedColor.Alpha *= 0.50
 			}
-			canvas.Label(line, labelBounds, gfx.TextStyle{Size: fontSize, Weight: weight, Color: selectedColor})
+			selectedStyle := gfx.TextStyle{Size: fontSize, Weight: weight, Color: selectedColor}
+			if snapshot.PaintLine != nil {
+				snapshot.PaintLine(canvas, line, labelBounds, selectedStyle)
+			} else {
+				canvas.Label(line, labelBounds, selectedStyle)
+			}
 			canvas.Unclip()
 		}
 	}

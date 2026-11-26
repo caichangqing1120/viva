@@ -648,6 +648,9 @@ func (x *MenuRow) GetChecked() int8 { return x.checked }
 // GetDescription reads the description of MenuRow for the styled painting layer.
 func (x *MenuRow) GetDescription() string { return x.description }
 
+// GetMnemonic reads the mnemonic of MenuRow for the styled painting layer.
+func (x *MenuRow) GetMnemonic() string { return x.mnemonic }
+
 // GetDestructive reads the destructive of MenuRow for the styled painting layer.
 func (x *MenuRow) GetDestructive() bool { return x.destructive }
 
@@ -1184,6 +1187,7 @@ func (x *TableDecl) GetSpec() TableSpec { return x.spec }
 // GetFontSize reads the element's font size for the table being painted: the
 // explicit size when it has one, else the spec's.
 func (x *TableDecl) GetFontSize() float32 { return x.fontSize }
+func (x *TableDecl) GetTitles() []string  { return x.titles }
 
 // GetForeground reads the element's text color for the table being painted.
 func (x *TableDecl) GetForeground() gfx.Color { return x.foreground }
@@ -1937,11 +1941,17 @@ func (x *toast) GetAction() string { return x.action }
 // GetDescription reads the description of toast for the styled painting layer.
 func (x *toast) GetDescription() string { return x.description }
 
+// GetHideClose reads the hideClose of toast for the styled painting layer.
+func (x *toast) GetHideClose() bool { return x.hideClose }
+
 // GetN reads the n of toast for the styled painting layer.
 func (x *toast) GetN() uint32 { return x.n }
 
 // GetShown reads the shown of toast for the styled painting layer.
 func (x *toast) GetShown() bool { return x.shown }
+
+// GetTimeout reads the timeout of toast for the styled painting layer.
+func (x *toast) GetTimeout() time.Duration { return x.timeout }
 
 // GetTitle reads the title of toast for the styled painting layer.
 func (x *toast) GetTitle() string { return x.title }
@@ -2164,3 +2174,6 @@ func (x *Widgets) SetRectsCells(v []Rect) { x.rects = v }
 // GetButtonLook reads the look the recipe gave the themed button being painted, for the
 // styled painting layer that paints its content.
 func (x *Frame) GetButtonLook() style.ButtonLook { return x.buttonPainted }
+
+// GetMarks reads the marks of SliderDecl for the styled painting layer.
+func (d *SliderDecl) GetMarks() []SliderMark { return d.marks }

@@ -144,6 +144,14 @@ func (window resultWindow) SetAlwaysOnTop(enabled bool) error {
 	return control.SetAlwaysOnTop(enabled)
 }
 
+func (window resultWindow) SetDecorated(decorated bool, done func(error)) error {
+	control, ok := window.WindowControl.(decorationControl)
+	if !ok {
+		return platform.ErrWindowDecorationUnsupported
+	}
+	return control.SetDecorated(decorated, done)
+}
+
 func (window resultWindow) MoveTo(origin gfx.Point) {
 	if control, ok := window.WindowControl.(platform.WindowMover); ok {
 		control.MoveTo(origin)
@@ -265,3 +273,12 @@ func (item nativeStatusItem) SetIcon(icon StatusIcon) error {
 }
 func (item nativeStatusItem) SetTooltip(tooltip string) { item.item.SetTooltip(tooltip) }
 func (item nativeStatusItem) Remove()                   { item.item.Remove() }
+func (item nativeStatusItem) SetStatusHover(handler func(StatusAnchor, bool)) bool {
+	if handler == nil {
+		return item.item.SetHover(nil)
+	}
+	return item.item.SetHover(func(event platform.StatusHover) {
+		handler(StatusAnchor{rect: event.Anchor, set: event.Entered}, event.Entered)
+	})
+}
+func (item nativeStatusItem) RefreshMenu() { item.item.RefreshMenu() }

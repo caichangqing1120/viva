@@ -1,12 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math"
 	"slices"
 	"time"
 	"unicode"
+	"unsafe"
 
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/internal/framebuild"
@@ -85,7 +87,6 @@ type painter struct {
 	// allocations alive, so equal pointers mean equal bytes) lets a repaint that
 	// declared the same hits reuse both instead of mirroring the list again.
 	publishedHits      []gfx.Hit
-	semanticDirty      []gfx.ID
 	publishedFocus     gfx.ID
 	publishedTrap      gfx.ID
 	publishedInitial   gfx.ID
@@ -98,13 +99,13 @@ type painter struct {
 	publishedComposing bool
 	publishedTextField bool
 	hitsPublished      bool
-	// hitsSame remembers, for the canvas as painted, whether its hits equal
-	// publishedHits (0 unknown, 1 equal, 2 different), so the focus settling
-	// and the publish of one paint compare the list once.
-	hitsSame uint8
-	// focusSynced says the focus was synced with the canvas as painted, so the
-	// publish need not sync it again.
-	focusSynced   bool
+	// hitChanges is how the canvas as painted differs from publishedHits,
+	// worked out once per paint for the focus settling, the publish and the
+	// semantic mirror (see diffHits).
+	hitChanges hitDiff
+	// focusSettled is what was decided about the focus for the canvas as
+	// painted, so the publish of a repaint does not decide it again.
+	focusSettled  focusSettlement
 	labelNames    map[gfx.ID]string
 	labelNamePeak int
 	// controls draws the window buttons of a custom titlebar, on platforms where
@@ -135,9 +136,17 @@ type painter struct {
 	// presents immediately sets it; the headless driver does not.
 	coalesceInput    bool
 	setClipboardText func(string)
-	clipboardText    func() string
-	setCursor        func(Cursor) error
-	setCursorImage   func(*gfx.CursorImage) error
+	// clipboardReader reads the system clipboard's text, for a menu's Paste.
+	clipboardReader func() (string, error)
+	// textMenu is the words of the system's text menu; nil asks for none.
+	textMenu *TextMenuLabels
+	// textMenuNative is whether the window can show the system's text menu.
+	textMenuNative bool
+	// textMenuAt is the press that asked for the menu, until it is taken.
+	textMenuAt     *pointToMenu
+	clipboardText  func() string
+	setCursor      func(Cursor) error
+	setCursorImage func(*gfx.CursorImage) error
 	// cursorImage is the picture shown while cursor is CursorImage.
 	cursorImage *gfx.CursorImage
 }
@@ -166,6 +175,7 @@ func newPainterWithClock(canvas *gfx.Canvas, config *Config, clock func() time.D
 		onFileDrop:      config.OnFileDrop,
 		onResize:        config.OnResize,
 		textInput:       config.TextInput,
+		textMenu:        config.TextMenu,
 		canvas:          canvas,
 		size:            gfx.Size{Width: float32(config.Width), Height: float32(config.Height)},
 		frame:           framebuild.New(canvas),
@@ -244,6 +254,20 @@ func (painter *painter) pointerEvent(event platform.PointerEvent) (platform.Fram
 // pointerInput is pointerEvent for a press the runtime reads as it comes: a
 // mouse's or a pen's, or a finger's once touchEvent decided it is a press.
 func (painter *painter) pointerInput(event platform.PointerEvent) (platform.Frame, error) {
+	handled := false
+	frame, err := painter.pointerInputOf(event, &handled)
+	if err != nil || handled {
+		return frame, err
+	}
+	if menuFrame, menuErr, asked := painter.requestTextMenu(event); asked {
+		return menuFrame, menuErr
+	}
+	return frame, err
+}
+
+// pointerInputOf is pointerInput, and says in handled whether the application
+// took the press.
+func (painter *painter) pointerInputOf(event platform.PointerEvent, handled *bool) (platform.Frame, error) {
 	if event.Kind == platform.PointerDown {
 		painter.tap.Cancel()
 		painter.pointerOutside = false
@@ -281,6 +305,7 @@ func (painter *painter) pointerInput(event platform.PointerEvent) (platform.Fram
 		(event.Button == gfx.PointerButtonSecondary && painter.focus.Router().PassesSecondary(event.X, event.Y) ||
 			event.Button == gfx.PointerButtonPrimary && painter.focus.Router().PassesPrimary(event.X, event.Y))
 	result, focusChanged, edgeChanged := painter.pointerStep(event)
+	*handled = result.Handled
 	if passes {
 		if !result.Handled && painter.deliverClick(painter.pointer.Hovered(), pointerClickInfo(event)) {
 			result.Handled = true
@@ -293,6 +318,7 @@ func (painter *painter) pointerInput(event platform.PointerEvent) (platform.Fram
 			focusChanged, edgeChanged = focusChanged || again, edgeChanged || edgeAgain
 		}
 		result.Repaint = true
+		*handled = result.Handled
 	}
 
 	switch event.Kind {
@@ -1017,6 +1043,17 @@ func (painter *painter) titlebarInsets() (leading, trailing float32) {
 	return platformTitlebarInsets()
 }
 
+// focusSettlement is what a paint decided about the focus: nothing yet, synced
+// with the canvas, or kept because the canvas asks for nothing the focus and the
+// input regions do not already reflect.
+type focusSettlement uint8
+
+const (
+	focusUnsettled focusSettlement = iota
+	focusSynced
+	focusReused
+)
+
 // maxFocusPasses bounds the paints settleFocus adds to one frame: a page whose
 // every paint moves the focus somewhere new shows the last move.
 const maxFocusPasses = 2
@@ -1031,11 +1068,12 @@ func (painter *painter) settleFocus() {
 	}
 	for range maxFocusPasses {
 		if !painter.regionsNeedSync() {
+			painter.focusSettled = focusReused
 			return
 		}
 		before, beforeVisible := painter.focus.Focused(), painter.focus.KeyboardFocus()
 		painter.focus.Sync(painter.canvas)
-		painter.focusSynced = true
+		painter.focusSettled = focusSynced
 		if painter.focus.Focused() == before && painter.focus.KeyboardFocus() == beforeVisible {
 			return
 		}
@@ -1056,7 +1094,7 @@ func (painter *painter) regionsNeedSync() bool {
 }
 
 func (painter *painter) paintCanvas() {
-	painter.hitsSame, painter.focusSynced = 0, false
+	painter.hitChanges.known, painter.focusSettled = false, focusUnsettled
 	if painter.paint == nil {
 		return
 	}
@@ -1106,10 +1144,14 @@ func (painter *painter) publish() (platform.Frame, error) {
 	// A repaint settled the focus already; a publish of a canvas painted outside
 	// repaint syncs it here.
 	hitStructuresUnchanged := painter.hitStructuresUnchanged()
-	if !painter.focusSynced && painter.regionsNeedSync() {
-		painter.focus.Sync(painter.canvas)
-		painter.focusSynced = true
-	} else if !painter.focusSynced {
+	if painter.focusSettled == focusUnsettled {
+		painter.focusSettled = focusReused
+		if painter.regionsNeedSync() {
+			painter.focus.Sync(painter.canvas)
+			painter.focusSettled = focusSynced
+		}
+	}
+	if painter.focusSettled == focusReused {
 		painter.reusedHits++
 	}
 	if err := painter.syncCursor(); err != nil {
@@ -1210,7 +1252,7 @@ func (painter *painter) trim() {
 	framebuild.ReleaseTail(painter.accessibility, &painter.tails.accessibility)
 	painter.hitScratch = framebuild.TrimCapacity(painter.hitScratch)
 	painter.publishedHits = framebuild.TrimCapacity(painter.publishedHits)
-	painter.semanticDirty = framebuild.TrimCapacity(painter.semanticDirty)
+	painter.hitChanges.dirty = framebuild.TrimCapacity(painter.hitChanges.dirty)
 	painter.publishedReturns = framebuild.TrimCapacity(painter.publishedReturns)
 	painter.accessibility = framebuild.TrimCapacity(painter.accessibility)
 	if painter.labelNamePeak > 4096 && len(painter.labelNames)*4 < painter.labelNamePeak {
@@ -1572,13 +1614,7 @@ func (painter *painter) hitStructuresUnchanged() bool {
 	if !painter.structuresUnchanged() {
 		return false
 	}
-	if painter.hitsSame == 0 {
-		painter.hitsSame = 2
-		if hits := painter.canvas.Hits(); len(hits) == len(painter.publishedHits) && sameHits(painter.publishedHits, hits) {
-			painter.hitsSame = 1
-		}
-	}
-	return painter.hitsSame == 1
+	return painter.diffHits().same
 }
 
 // regionStructuresUnchanged reports whether the paint produced the same input
@@ -1599,16 +1635,7 @@ func (painter *painter) regionStructuresUnchanged() bool {
 		!slices.Equal(painter.canvas.FocusReturns(), painter.publishedReturns) {
 		return false
 	}
-	hits := painter.canvas.Hits()
-	if len(hits) != len(painter.publishedHits) {
-		return false
-	}
-	for index := range hits {
-		if !sameRegionHit(&painter.publishedHits[index], &hits[index]) {
-			return false
-		}
-	}
-	return true
+	return painter.diffHits().sameRegions
 }
 
 // sameRegionHit compares the hit fields Focus.Sync copies into an input.Region.
@@ -1628,6 +1655,7 @@ func sameRegionHit(published, current *gfx.Hit) bool {
 		published.BlockSurface == current.BlockSurface &&
 		published.Container == current.Container &&
 		published.IsLabel == current.IsLabel &&
+		published.Presentational == current.Presentational &&
 		published.Backdrop == current.Backdrop &&
 		published.MovesWindow == current.MovesWindow &&
 		published.PassSecondary == current.PassSecondary &&
@@ -1665,22 +1693,100 @@ func (painter *painter) structuresUnchanged() bool {
 	return true
 }
 
-// sameHits reports whether two hit lists are identical in the fields the
-// semantic tree and the accessibility payload read. The text-editor geometry
-// lives beside the hits (Canvas.HitText) and feeds neither, so it is not part of
-// the comparison. Strings compare by content: a page that formats a label every
-// frame makes a new allocation of the same text, and that is an unchanged hit.
-// The index into the text table can only make the comparison stricter (an
-// unnecessary publish), never more permissive.
-func sameHits(published, current []gfx.Hit) bool {
-	return slices.Equal(published, current)
+// maxPatchedHits is the most changed controls the semantic mirror patches in
+// place; past it, rebuilding every entry is no dearer than finding them.
+const maxPatchedHits = 64
+
+// hitDiff is how one paint's hits differ from the published ones. Hits compare
+// whole: the semantic tree and the accessibility payload read every field. The
+// text-editor geometry lives beside the hits (Canvas.HitText) and feeds
+// neither, so it is not part of the comparison. Strings compare by content: a
+// page that formats a label every frame makes a new allocation of the same
+// text, and that is an unchanged hit (see sameHit). The index into the text
+// table can only make the comparison stricter (an unnecessary publish), never
+// more permissive.
+type hitDiff struct {
+	known bool
+	// same is set when every hit equals its published counterpart.
+	same bool
+	// sameRegions is set when every hit equals its counterpart in the fields an
+	// input region is built from (sameRegionHit): a label, value or description
+	// change keeps every region.
+	sameRegions bool
+	// patchable is set when the hits kept their identities and kinds and at
+	// most maxPatchedHits of them changed; dirty then names those controls.
+	patchable bool
+	dirty     []gfx.ID
+}
+
+// sameHit reports whether two hits are equal. Most hits of a repaint are the
+// published ones again, byte for byte, so the bytes are compared first: Go
+// strings are immutable and publishedHits keeps the previous frame's strings
+// reachable, so the same pointer cannot name different text, and padding can
+// only make the bytes differ. Hits whose bytes differ compare by value, which
+// is what tells a label formatted again with the same words from a change.
+func sameHit(published, current *gfx.Hit) bool {
+	size := unsafe.Sizeof(*published)
+	left := unsafe.Slice((*byte)(unsafe.Pointer(published)), size)
+	right := unsafe.Slice((*byte)(unsafe.Pointer(current)), size)
+	return bytes.Equal(left, right) || *published == *current
+}
+
+// diffHits compares the canvas as painted with publishedHits once per paint,
+// in one pass, and answers every caller of that paint from the result.
+func (painter *painter) diffHits() *hitDiff {
+	diff := &painter.hitChanges
+	if diff.known {
+		return diff
+	}
+	diff.known = true
+	diff.dirty = diff.dirty[:0]
+	current, published := painter.canvas.Hits(), painter.publishedHits
+	if len(current) != len(published) {
+		diff.same, diff.sameRegions, diff.patchable = false, false, false
+		return diff
+	}
+	diff.same, diff.sameRegions, diff.patchable = true, true, true
+	for index := range current {
+		now, was := &current[index], &published[index]
+		if sameHit(was, now) {
+			continue
+		}
+		diff.same = false
+		if diff.sameRegions && !sameRegionHit(was, now) {
+			diff.sameRegions = false
+		}
+		if diff.patchable {
+			diff.patchable = now.ID == was.ID && now.IsLabel == was.IsLabel &&
+				now.Presentational == was.Presentational && now.Block == was.Block && now.MovesWindow == was.MovesWindow &&
+				now.Backdrop == was.Backdrop
+			// A zero ID is tracked like any other: it marks every zero-ID node
+			// (headings, groups, live regions) for a rebuild, and matches nothing
+			// for an occluder or drag region, which has none.
+			if diff.patchable && !slices.Contains(diff.dirty, now.ID) {
+				diff.dirty = append(diff.dirty, now.ID)
+				diff.patchable = len(diff.dirty) <= maxPatchedHits
+			}
+		}
+		if !diff.patchable {
+			// Only the regions are still in question, and they read a subset of
+			// each hit: compare just that for the rest of the list.
+			for rest := index + 1; diff.sameRegions && rest < len(current); rest++ {
+				diff.sameRegions = sameRegionHit(&published[rest], &current[rest])
+			}
+			break
+		}
+	}
+	return diff
 }
 
 // recordHitStructures keeps the state that lets the next repaint skip the
 // region and semantic mirror when nothing that feeds them changed.
 func (painter *painter) recordHitStructures() {
 	painter.publishedHits = append(painter.publishedHits[:0], painter.canvas.Hits()...)
-	painter.hitsSame = 1
+	painter.hitChanges.known = true
+	painter.hitChanges.same, painter.hitChanges.sameRegions, painter.hitChanges.patchable = true, true, true
+	painter.hitChanges.dirty = painter.hitChanges.dirty[:0]
 	painter.publishedFocus = painter.focus.Focused()
 	painter.publishedTrap = painter.canvas.TrappedFocusScope()
 	painter.publishedInitial = painter.canvas.InitialFocus()
@@ -1717,43 +1823,19 @@ func (painter *painter) syncSemantics(incremental bool) (changed bool) {
 	canvasHits := painter.canvas.Hits()
 	// incremental is set when only the hit list changed: the focus, text state
 	// and view are the same, so a control whose hit and label are unchanged
-	// keeps its accessibility node. Compare the raw hits first and remember the
-	// few ids whose entry may have moved; a structural change, a label-map
-	// fallback or too many dirty ids falls back to the full mirror below.
-	fast := incremental && len(canvasHits) == len(painter.publishedHits)
-	dirty := painter.semanticDirty[:0]
-	if fast {
-		for index := range canvasHits {
-			current, previous := &canvasHits[index], &painter.publishedHits[index]
-			if current.ID != previous.ID || current.IsLabel != previous.IsLabel ||
-				current.Block != previous.Block || current.MovesWindow != previous.MovesWindow ||
-				current.Backdrop != previous.Backdrop {
-				fast = false
-				break
-			}
-			if *current != *previous && !current.ID.IsZero() {
-				known := false
-				for _, id := range dirty {
-					if id == current.ID {
-						known = true
-						break
-					}
-				}
-				if !known {
-					dirty = append(dirty, current.ID)
-					if len(dirty) > 64 {
-						fast = false
-						break
-					}
-				}
-			}
-		}
+	// keeps its accessibility node. The paint's hit diff names the few ids
+	// whose entry may have moved; a structural change, a label-map fallback or
+	// too many dirty ids falls back to the full mirror below.
+	fast := false
+	var dirty []gfx.ID
+	if incremental {
+		diff := painter.diffHits()
+		fast, dirty = diff.patchable, diff.dirty
 	}
-	painter.semanticDirty = dirty
 	for index := range canvasHits {
 		hit := &canvasHits[index]
 		switch {
-		case hit.Block, hit.MovesWindow:
+		case hit.Block, hit.MovesWindow, hit.Presentational:
 		case hit.IsLabel:
 			labelled = true
 			switch {

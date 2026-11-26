@@ -51,6 +51,15 @@ type Config struct {
 	TitlebarHeight    float32
 	TrafficLightScale float32
 	ClearColor        Color
+	// Transparent asks for a window composited over the desktop: ClearColor's
+	// alpha is what shows what is behind it. Adapters that cannot composite
+	// ignore it, and app.Config only sets it where they report the capability.
+	Transparent bool
+	// OnTransparentChange, when set with Transparent, is told once the window
+	// exists whether the desktop shows through it. It is false where the
+	// adapter could not composite the window (no compositing manager, or a
+	// window kind that has no alpha surface).
+	OnTransparentChange func(active bool)
 	// WindowBorderColor, when set, is read on the window thread with every
 	// frame and names the color of the border the desktop draws around a
 	// custom-titlebar window. Windows 11 composites that border against what
@@ -150,8 +159,12 @@ type Config struct {
 	OnCloseRequest CloseRequestHandler
 	// OnClosed runs exactly once on the native event-loop thread after this
 	// window has stopped receiving events and released its platform resources.
-	OnClosed         func()
-	TextInput        *TextInput
+	OnClosed  func()
+	TextInput *TextInput
+	// TakeTextMenu hands the adapter the text menu the runtime wants shown, once the
+	// adapter has delivered a press and presented the frame it produced. It returns
+	// false when no menu was asked for. Nil means the runtime shows none.
+	TakeTextMenu     func() (TextMenuRequest, bool)
 	DynamicTextInput bool
 	// ReadOnlyTextFocused reports the last painted focused hit. Linux uses it
 	// to recheck a disabled native input before routing a new key.
@@ -279,6 +292,9 @@ var ErrFullscreenUnsupported = errors.New("platform: fullscreen is unsupported")
 // above others.
 var ErrAlwaysOnTopUnsupported = errors.New("platform: always-on-top is unsupported")
 
+// ErrWindowDecorationUnsupported means the host cannot change native decorations.
+var ErrWindowDecorationUnsupported = errors.New("platform: live window decorations are unsupported")
+
 // ErrWindowSizeUnsupported means this window kind cannot be resized by the
 // application.
 var ErrWindowSizeUnsupported = errors.New("platform: programmatic window size is unsupported")
@@ -298,6 +314,11 @@ type StatusItem interface {
 	SetIcon(StatusIcon) error
 	// SetTooltip replaces the text shown while the pointer rests on the icon.
 	SetTooltip(string)
+	// SetHover observes native status item entry and exit. A nil handler
+	// restores normal hover behavior. Unsupported hosts return false.
+	SetHover(func(StatusHover)) bool
+	// RefreshMenu publishes changed menu entries to a host that caches them.
+	RefreshMenu()
 	// Remove takes the icon away. It is idempotent and thread-safe.
 	Remove()
 }
@@ -339,6 +360,12 @@ type StatusClick struct {
 	PanelDismissed bool
 }
 
+// StatusHover is a native pointer transition at a status item.
+type StatusHover struct {
+	Anchor  ScreenRect
+	Entered bool
+}
+
 // StatusItemConfig describes a status item. OnClick and Menu run on the native
 // event-loop thread. With a Menu the system shows it for a press of the item.
 // OnClick then runs only for a press the system does not turn into the menu: a
@@ -367,6 +394,46 @@ type MenuItem struct {
 	// siblings are told apart only by their order, so removing one of them gives
 	// a new id to the ones after it.
 	ID string
+}
+
+// TextMenuCommand is one command of the menu a text field opens on a secondary
+// press. The runtime runs it through the same path as the keyboard shortcut of
+// the same name, so a command chosen from the menu and a chord do the same thing.
+type TextMenuCommand uint8
+
+const (
+	// TextMenuNone is no command: a dismissed menu, or a separator in the items.
+	TextMenuNone TextMenuCommand = iota
+	TextMenuCut
+	TextMenuCopy
+	TextMenuPaste
+	TextMenuSelectAll
+)
+
+// TextMenuItem is one row of a text menu. A zero Command is a separator.
+type TextMenuItem struct {
+	Command  TextMenuCommand
+	Title    string
+	Disabled bool
+}
+
+// TextMenuRequest is the menu the runtime wants shown for the focused text
+// field: where, in logical pixels of the window's content, what rows, and what
+// runs with the command chosen. Perform runs on the event-loop thread after the
+// menu has closed.
+type TextMenuRequest struct {
+	Items   []TextMenuItem
+	X, Y    float32
+	Perform func(TextMenuCommand) (Frame, error)
+}
+
+// TextMenuPopper is implemented by the windows of an adapter that can show the
+// system's own menu: macOS and Windows. PopupTextMenu returns when the menu has
+// closed, with the command chosen, or TextMenuNone. It runs on the event-loop
+// thread, from inside the handler of the press that asked for it, as the
+// system's own text fields do.
+type TextMenuPopper interface {
+	PopupTextMenu(items []TextMenuItem, x, y float32) (TextMenuCommand, error)
 }
 
 // ApplicationStart initializes the first windows before the event loop waits.

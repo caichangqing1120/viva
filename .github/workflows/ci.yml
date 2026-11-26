@@ -184,7 +184,7 @@ jobs:
         run: |
           sudo apt-get install -y xvfb libxcb-shape0 libgtk-3-0 ||
             { sudo apt-get update && sudo apt-get install -y xvfb libxcb-shape0 libgtk-3-0; }
-          xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' go test ./internal/platform/linux -run '^Test(PreviewNativeX11Contract|NotificationNativeX11|TrayWindowQueuedRedrawBeforeInput|TrayWindowRepaintsLaterExposure|AFileDragOutReachesAnotherClient)$' -count=1 -v
+          xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' go test ./internal/platform/linux -run '^Test(PreviewNativeX11Contract|NotificationNativeX11|TrayWindowQueuedRedrawBeforeInput|TrayWindowRepaintsLaterExposure|TrayPanelPreservesHostAnchorAtScale|AFileDragOutReachesAnotherClient)$' -count=1 -v
           GDK_BACKEND=x11 VIVA_TEST_GTK_NOTIFICATION=1 xvfb-run -a go test -tags vivagtk ./internal/platform/linux -run '^TestGTKNotificationFocusHints$' -count=1 -v
       - name: Native X11 global shortcut
         env:
@@ -377,14 +377,25 @@ jobs:
       # WARP is a Windows API: this cannot run anywhere else. The file icon and
       # native structure ABI tests are here for the same reason: they build only
       # on Windows.
+      - name: directory picker initial location
+        run: go test ./internal/platform/windows ./app -run '^Test(FileDialogInitialDirectory|DriverInterceptsOpenDirectory)$' -count=1 -v
       - name: Material contracts and controls (WARP)
         run: go test ./internal/platform/windows ./ui ./components ./headless ./app -run 'Test(Backdrop|WindowBackdrop|OpeningMaximized|Notification|TaskbarCreated|CompositionClear|CompositionFallback|CompositionCreation|CustomBackdrop|AcrylicAccent|LegacyAcrylic|RoundedOutline|Translucent|MonospaceFamilies|FontWeights|(The)?MonoWeights|(The)?InterfaceWeights|EveryListedFamilyResolves|EngineReportsTheFontsUnderline|AlwaysOnTop|SaveDialogCheckbox|FileIcon|NativeStructureABI|ResizePresents|WindowSwapChain|LiveResize|FlipWindowResize|RedrawWaits|ContinuousRedraw|NoOpFrame|SameSize|ZeroSize|ResizeTimer|RedrawQueue|NativeRedrawMessage|CompositionSupersededFrame|DragPreview|QueuedMenuKeysLeaveTerminalCompositionWithItsOwner|MenuKeysPreserveSystemChordsAndShift|TerminalMenuStopsCapturingWhenWindowLosesFocus|DisabledIMEOffersMenuShortcutDuringComposition)' -count=1 -v
+      - name: Offscreen incremental frame pixels
+        run: |
+          $test = 'TestOffscreenIncrementalUpdatesDrawWhatARebuildDraws'
+          go test -json ./internal/platform/windows -run "^${test}$" -count=1 -timeout=2m | Tee-Object -Variable events
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $passed = $events | ConvertFrom-Json | Where-Object { $_.Action -eq 'pass' -and $_.Test -eq $test }
+          if (-not $passed) { throw "$test did not pass on the Windows runner" }
       - name: Web view partitions
         run: go test ./internal/platform/windows -run '^Test(APageWithoutAPartitionAsksForNoProfileOfItsOwn|APartitionNamesTheWebView2Profile|AnEphemeralPartitionIsAnOffTheRecordProfile|EphemeralPagesWithoutAPartitionEachGetAProfileOfTheirOwn)$' -count=1 -v
       - name: Terminal keyboard routing
         run: go test ./internal/platform/windows -run '^TestATerminalGetsEditingKeysAndChordsAsRawKeys$' -count=1 -v
       - name: Native window and grouped taskbar icons
         run: go test ./internal/platform/windows -run '^TestWindowIconUpdatesOnTheWindowThread$' -count=1 -v
+      - name: Native window decoration changes
+        run: go test ./internal/platform/windows -run '^TestNativeWindowDecoration' -count=1 -v -timeout=90s
       - name: Non-activating desktop notification
         env:
           VIVA_TEST_NOTIFICATION_DESKTOP: '1'
@@ -393,8 +404,12 @@ jobs:
         env:
           VIVA_NATIVE_GLOBAL_SHORTCUT_TEST: '1'
         run: go test ./internal/platform/windows -run '^TestNativeGlobalShortcutRegistration$' -count=1 -v
-      - name: Native Direct2D text origins and hidden labels
-        run: go test ./internal/platform/windows -run '^Test(DirectTextLayoutOriginByValue|HiddenNativeEditorDoesNotDrawColorEmoji|TextEngineRasterizesProportionalText)$' -count=1 -v
+      - name: Native Windows clipboard transactions
+        env:
+          VIVA_WINDOWS_CLIPBOARD: '1'
+        run: go test ./internal/platform/windows -run '^TestColumnClipboardNative' -count=1 -v -timeout=2m
+      - name: Native Direct2D text origins, hidden labels and font fallback
+        run: go test ./internal/platform/windows -run '^Test(DirectTextLayoutOriginByValue|HiddenNativeEditorDoesNotDrawColorEmoji|TextEngineRasterizesProportionalText|RegisteredFontDrawsFallbackCharacters)$' -count=1 -v
       - name: Promised file drag
         run: go test ./internal/platform/windows -run '^Test(ThePromiseDataObject|ThePromiseStream|ThePromiseEnumerator|PromiseNames)' -count=1 -v
       - name: Native DirectWrite fitted bidi text
@@ -414,6 +429,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-11-arm
+    env:
+      VIVA_SOFTWARE_RENDERING: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -421,12 +438,14 @@ jobs:
           go-version-file: go.mod
           architecture: arm64
           cache: true
-      - name: Native ARM64 Direct2D text origins
+      - name: Native ARM64 Direct2D text origins and font fallback
         run: |
           if ((go env GOARCH) -ne 'arm64') { throw 'Expected native ARM64 Go' }
-          go test ./internal/platform/windows -run '^TestDirectTextLayoutOriginByValue$' -count=1 -v
+          go test ./internal/platform/windows -run '^Test(DirectTextLayoutOriginByValue|RegisteredFontDrawsFallbackCharacters)$' -count=1 -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test ./internal/platform/windows ./components -run '^Test(Fitted(DirectWrite|WindowsClusters)|CodeEditorDirectWrite)' -count=1 -v
+      - name: Native ARM64 window decoration changes
+        run: go test ./internal/platform/windows -run '^TestNativeWindowDecoration' -count=1 -v -timeout=90s
 
   # A noise-tolerant benchmark regression gate for the pure-Go paths: the base
   # revision and the pull request run the same benchmarks on the same runner,

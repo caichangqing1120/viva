@@ -527,6 +527,12 @@ type HitOptions struct {
 	PassPrimary bool
 	// label makes the hit a label of its ID's control (see Canvas.HitLabel).
 	label bool
+	// Presentational makes the hit a region that only takes the pointer: a part of a
+	// control over content that assistive technology already reads, such as the
+	// painted words of a selectable text, which shows the text cursor over the
+	// words. It has no accessibility node of its own and is never focused; a press
+	// on it reaches its control as a press on any part does.
+	Presentational bool
 	// Autofocus gives the hit the keyboard in the paint where it first
 	// appears, that is, when the previous paint did not declare its ID. Use it
 	// for a page that should be ready to type into as soon as it is shown,
@@ -653,6 +659,8 @@ type Hit struct {
 	// Container marks a semantic region with no target: a menu, listbox, grid,
 	// heading or status area. It is not hit-testable and declares no control.
 	Container bool
+	// Presentational is HitOptions.Presentational.
+	Presentational bool
 	// IsLabel marks a label of the control the ID names (see Canvas.HitLabel):
 	// a press on it is a press on the control, it is no tab stop and no node of
 	// its own, and its Label text names the control for assistive technology.
@@ -696,6 +704,10 @@ type Canvas struct {
 	texts       []Text
 	runs        []TextRun
 	hits        []Hit
+	hoverHints  []HoverHint
+
+	hoverHintOwner Scope
+	hoverHintSide  uint8
 	// hitTexts holds the text geometry of the hits that declared any, in
 	// declaration order; Hit.Text is one more than the entry's index.
 	hitTexts     []HitText
@@ -796,9 +808,11 @@ type Canvas struct {
 	afterPaint                  []func()
 	// pointer is the pointer event the event pass is delivering; consumed records
 	// that a control took it; listensForPointer that the last paint asked.
-	pointer           PointerEvent
-	hasPointer        bool
-	consumed          bool
+	pointer    PointerEvent
+	hasPointer bool
+	consumed   bool
+	// nativeTextMenu is whether the window shows the system's text menu.
+	nativeTextMenu    bool
 	listensForPointer bool
 	initialFocus      ID
 	// focusRequest asks the runtime to focus one hit even without a trap, as a
@@ -1030,6 +1044,8 @@ func (canvas *Canvas) Reset() {
 	canvas.texts = canvas.texts[:0]
 	canvas.runs = canvas.runs[:0]
 	canvas.hits = canvas.hits[:0]
+	canvas.hoverHints = canvas.hoverHints[:0]
+	canvas.hoverHintOwner, canvas.hoverHintSide = 0, 0
 	canvas.hitTexts = canvas.hitTexts[:0]
 	canvas.clips = canvas.clips[:0]
 	canvas.overlayClips = canvas.overlayClips[:0]
@@ -1078,6 +1094,7 @@ func (canvas *Canvas) Trim() {
 	releaseTail(canvas.images, &canvas.tails.images)
 	releaseTail(canvas.texts, &canvas.tails.texts)
 	releaseTail(canvas.hits, &canvas.tails.hits)
+	releaseTail(canvas.hoverHints, &canvas.tails.hoverHints)
 	releaseTail(canvas.hitTexts, &canvas.tails.hitTexts)
 	releaseTail(canvas.nativeViews, &canvas.tails.nativeViews)
 	canvas.rectangles = trimCapacity(canvas.rectangles)
@@ -1088,6 +1105,7 @@ func (canvas *Canvas) Trim() {
 	canvas.texts = trimCapacity(canvas.texts)
 	canvas.runs = trimCapacity(canvas.runs)
 	canvas.hits = trimCapacity(canvas.hits)
+	canvas.hoverHints = trimCapacity(canvas.hoverHints)
 	canvas.hitTexts = trimCapacity(canvas.hitTexts)
 	canvas.clips = trimCapacity(canvas.clips)
 	canvas.overlayClips = trimCapacity(canvas.overlayClips)
@@ -1189,6 +1207,30 @@ func (canvas *Canvas) DrawBitmapShaded(bitmap Bitmap, source, bounds Rect, radiu
 // layer, so that translucent surfaces let it show through. It is not clipped and
 // belongs to no layer. At most one backdrop is meaningful; with several, they
 // stack in the order given. Invalid or empty bitmaps are ignored.
+// DrawBitmapPixels paints bitmap with its top-left corner on the device pixel
+// nearest origin, one bitmap pixel to one device pixel, and returns the logical
+// rectangle it covers. It is DrawBitmapRegion for a picture whose pixels are the
+// screen's, as Surface.DrawPixels is for a surface: the canvas must know the
+// display scale (SetPixelScale), and without it a device pixel is taken to be
+// half a logical one.
+func (canvas *Canvas) DrawBitmapPixels(bitmap Bitmap, origin Point) Rect {
+	scale := canvas.PixelScale()
+	if scale <= 0 {
+		scale = 1
+	}
+	left, top := deviceEdge(origin.X, scale), deviceEdge(origin.Y, scale)
+	covered := Rect{
+		X: float32(left) / scale, Y: float32(top) / scale,
+		Width: float32(bitmap.Width) / scale, Height: float32(bitmap.Height) / scale,
+	}
+	before := len(canvas.images)
+	canvas.DrawBitmap(bitmap, covered)
+	if len(canvas.images) > before {
+		canvas.images[before].DevicePixels = true
+	}
+	return covered
+}
+
 func (canvas *Canvas) DrawBackdrop(bitmap Bitmap, source, bounds Rect) {
 	before := len(canvas.images)
 	canvas.DrawBitmapRegion(bitmap, source, bounds)
@@ -1700,7 +1742,7 @@ func (canvas *Canvas) HitWithOptions(id ID, bounds Rect, label string, options H
 	if role == 0 {
 		role = RoleButton
 	}
-	focusable := (!options.Disabled || options.FocusableWhenDisabled) && !options.SkipFocus
+	focusable := (!options.Disabled || options.FocusableWhenDisabled) && !options.SkipFocus && !options.Presentational
 	if options.Secure {
 		options.Value = ""
 	}
@@ -1727,7 +1769,7 @@ func (canvas *Canvas) HitWithOptions(id ID, bounds Rect, label string, options H
 		Multiline: options.Multiline, ReadOnly: options.ReadOnly, Invalid: options.Invalid, Secure: options.Secure,
 		Description: options.Description, Level: options.Level, PosInSet: options.PosInSet, SetSize: options.SetSize,
 		Live: options.Live, Range: options.Range,
-		Focusable: focusable, SkipTab: focusable && options.SkipTab, Autofocus: options.Autofocus && focusable, IsLabel: options.label, Backdrop: options.Backdrop,
+		Focusable: focusable, SkipTab: focusable && options.SkipTab, Autofocus: options.Autofocus && focusable, IsLabel: options.label, Presentational: options.Presentational, Backdrop: options.Backdrop,
 		PassSecondary: options.Backdrop && options.PassSecondary, PassPrimary: options.Backdrop && options.PassPrimary,
 		HideNativeOverlays: options.HideNativeOverlays,
 		NavigationKeys:     options.NavigationKeys,
@@ -2372,6 +2414,14 @@ func (canvas *Canvas) PointerIn(list Scope) (int, PointerEvent, bool) {
 	}
 	return index, canvas.pointer, true
 }
+
+// SetNativeTextMenu records that the window shows the system's own menu for a
+// secondary press on a text field, so a page does not draw one too. The runtime
+// sets it from the window; it is not reset between paints.
+func (canvas *Canvas) SetNativeTextMenu(native bool) { canvas.nativeTextMenu = native }
+
+// NativeTextMenu reports whether the window shows the system's own text menu.
+func (canvas *Canvas) NativeTextMenu() bool { return canvas.nativeTextMenu }
 
 // Consume says the control took the pointer event being delivered: the runtime
 // does not also treat it as a click, and repaints. It does nothing outside the

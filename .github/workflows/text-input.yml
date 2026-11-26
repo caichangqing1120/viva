@@ -31,12 +31,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  registered-font-probe:
+    if: github.repository == 'caichangqing1120/viva' && github.ref == 'refs/heads/codex/verify-registered-font-fallback-56f9fe3a'
+    uses: ./.github/workflows/verify-registered-font-fallback.yml
+
   # macOS is not in the matrix: ci.yml's darwin job tests ./app and vets the
   # darwin platform packages on macOS for every change that reaches here, so a
   # third macOS job would only take a slot from the pool that all workflows
   # share. The type-checks are not repeated either: ci.yml's lint job vets every
   # package for Linux and its cross-vet job for Windows.
   native:
+    if: github.ref != 'refs/heads/codex/verify-registered-font-fallback-56f9fe3a'
     strategy:
       fail-fast: false
       matrix:

@@ -877,6 +877,22 @@ func (editor *CodeEditor) OffsetAtY(y float32) (int, bool) {
 	return int(row.end), true
 }
 
+// VisualRowAtY returns the source byte span of the laid-out row at y pixels
+// from the top of the text, independent of scrolling. Soft wraps split spans
+// and folded lines are omitted. It returns false before layout or outside the
+// text, and a valid empty span for an empty row.
+func (editor *CodeEditor) VisualRowAtY(y float32) (text.Span, bool) {
+	if !editor.painted || !editor.fitted || editor.lineHeight <= 0 {
+		return text.Span{}, false
+	}
+	position := y / editor.lineHeight
+	if !(position >= 0 && position < float32(len(editor.rows))) {
+		return text.Span{}, false
+	}
+	row := editor.rows[int(position)]
+	return text.Span{Start: int(row.start), End: int(row.end)}, true
+}
+
 // LineCount is the number of logical lines of the text last painted.
 func (editor *CodeEditor) LineCount() int { return editor.lineCount }
 

@@ -381,6 +381,13 @@ jobs:
         run: go test ./internal/platform/windows ./app -run '^Test(FileDialogInitialDirectory|DriverInterceptsOpenDirectory)$' -count=1 -v
       - name: Material contracts and controls (WARP)
         run: go test ./internal/platform/windows ./ui ./components ./headless ./app -run 'Test(Backdrop|WindowBackdrop|OpeningMaximized|Notification|TaskbarCreated|CompositionClear|CompositionFallback|CompositionCreation|CustomBackdrop|AcrylicAccent|LegacyAcrylic|RoundedOutline|Translucent|MonospaceFamilies|FontWeights|(The)?MonoWeights|(The)?InterfaceWeights|EveryListedFamilyResolves|EngineReportsTheFontsUnderline|AlwaysOnTop|SaveDialogCheckbox|FileIcon|NativeStructureABI|ResizePresents|WindowSwapChain|LiveResize|FlipWindowResize|RedrawWaits|ContinuousRedraw|NoOpFrame|SameSize|ZeroSize|ResizeTimer|RedrawQueue|NativeRedrawMessage|CompositionSupersededFrame|DragPreview|QueuedMenuKeysLeaveTerminalCompositionWithItsOwner|MenuKeysPreserveSystemChordsAndShift|TerminalMenuStopsCapturingWhenWindowLosesFocus|DisabledIMEOffersMenuShortcutDuringComposition)' -count=1 -v
+      - name: Offscreen incremental frame pixels
+        run: |
+          $test = 'TestOffscreenIncrementalUpdatesDrawWhatARebuildDraws'
+          go test -json ./internal/platform/windows -run "^${test}$" -count=1 -timeout=2m | Tee-Object -Variable events
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $passed = $events | ConvertFrom-Json | Where-Object { $_.Action -eq 'pass' -and $_.Test -eq $test }
+          if (-not $passed) { throw "$test did not pass on the Windows runner" }
       - name: Web view partitions
         run: go test ./internal/platform/windows -run '^Test(APageWithoutAPartitionAsksForNoProfileOfItsOwn|APartitionNamesTheWebView2Profile|AnEphemeralPartitionIsAnOffTheRecordProfile|EphemeralPagesWithoutAPartitionEachGetAProfileOfTheirOwn)$' -count=1 -v
       - name: Terminal keyboard routing
@@ -399,8 +406,8 @@ jobs:
         env:
           VIVA_WINDOWS_CLIPBOARD: '1'
         run: go test ./internal/platform/windows -run '^TestColumnClipboardNative' -count=1 -v -timeout=2m
-      - name: Native Direct2D text origins and hidden labels
-        run: go test ./internal/platform/windows -run '^Test(DirectTextLayoutOriginByValue|HiddenNativeEditorDoesNotDrawColorEmoji|TextEngineRasterizesProportionalText)$' -count=1 -v
+      - name: Native Direct2D text origins, hidden labels and font fallback
+        run: go test ./internal/platform/windows -run '^Test(DirectTextLayoutOriginByValue|HiddenNativeEditorDoesNotDrawColorEmoji|TextEngineRasterizesProportionalText|RegisteredFontDrawsFallbackCharacters)$' -count=1 -v
       - name: Promised file drag
         run: go test ./internal/platform/windows -run '^Test(ThePromiseDataObject|ThePromiseStream|ThePromiseEnumerator|PromiseNames)' -count=1 -v
       - name: Native DirectWrite fitted bidi text
@@ -427,10 +434,10 @@ jobs:
           go-version-file: go.mod
           architecture: arm64
           cache: true
-      - name: Native ARM64 Direct2D text origins
+      - name: Native ARM64 Direct2D text origins and font fallback
         run: |
           if ((go env GOARCH) -ne 'arm64') { throw 'Expected native ARM64 Go' }
-          go test ./internal/platform/windows -run '^TestDirectTextLayoutOriginByValue$' -count=1 -v
+          go test ./internal/platform/windows -run '^Test(DirectTextLayoutOriginByValue|RegisteredFontDrawsFallbackCharacters)$' -count=1 -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test ./internal/platform/windows ./components -run '^Test(Fitted(DirectWrite|WindowsClusters)|CodeEditorDirectWrite)' -count=1 -v
 

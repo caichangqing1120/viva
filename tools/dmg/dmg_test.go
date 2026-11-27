@@ -114,6 +114,9 @@ func TestBuiltImageHoldsTheLayoutTheFinderReads(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("disk images are made on macOS")
 	}
+	if os.Getenv("VIVA_DISK_IMAGE_TESTS") != "1" {
+		t.Skip("makes real disk images with hdiutil; set VIVA_DISK_IMAGE_TESTS=1 to run")
+	}
 	bundle := filepath.Join(t.TempDir(), "Sample.app")
 	if err := os.MkdirAll(filepath.Join(bundle, "Contents"), 0o755); err != nil {
 		t.Fatal(err)
@@ -130,7 +133,7 @@ func TestBuiltImageHoldsTheLayoutTheFinderReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	mount := t.TempDir()
-	if out, err := exec.Command("hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", mount, image).CombinedOutput(); err != nil {
+	if out, err := exec.Command("hdiutil", "attach", "-nobrowse", "-noautoopen", "-readonly", "-mountpoint", mount, image).CombinedOutput(); err != nil {
 		t.Fatalf("attach: %v\n%s", err, out)
 	}
 	t.Cleanup(func() { _ = exec.Command("hdiutil", "detach", "-force", mount).Run() })

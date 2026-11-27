@@ -97,7 +97,7 @@ func TestDocumentedRecipesCompileAfterInstallation(t *testing.T) {
 	if err := run([]string{"add", "--out", destination, "--package", "recipes", "button", "badge", "checkbox", "switch", "input", "dialog"}, ioDiscard{}); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("go", "test", "-mod=mod", "./...")
+	command := exec.Command("go", "test", "-trimpath", "-mod=mod", "./...")
 	command.Dir = destination
 	command.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := command.CombinedOutput(); err != nil {
@@ -127,7 +127,7 @@ func TestEveryRecipeCompilesInstalledOnItsOwn(t *testing.T) {
 			t.Fatalf("add %s: %v", name, err)
 		}
 	}
-	command := exec.Command("go", "build", "-mod=mod", "./...")
+	command := exec.Command("go", "build", "-trimpath", "-mod=mod", "./...")
 	command.Dir = destination
 	command.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := command.CombinedOutput(); err != nil {
@@ -159,15 +159,20 @@ func TestAddingARecipeAlsoInstallsWhatItCallsInto(t *testing.T) {
 	if err := run([]string{"add", "--out", destination, "--package", "recipes", "dialog"}, &output); err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{"button.go", "dialog.go"} {
+	files := []string{"button.go", "dialog.go"}
+	for _, file := range files {
 		if _, err := os.Stat(filepath.Join(destination, file)); err != nil {
 			t.Errorf("adding dialog did not install %s: %v", file, err)
 		}
 	}
-	if lines := strings.Fields(output.String()); len(lines) != 2 || !strings.HasSuffix(lines[0], "button.go") {
-		t.Errorf("installed files = %q, want button before dialog", lines)
+	lines := strings.Fields(output.String())
+	for index, line := range lines {
+		lines[index] = filepath.Base(line)
 	}
-	// On its own, the installed pair compiles.
+	if strings.Join(lines, ",") != strings.Join(files, ",") {
+		t.Errorf("installed files = %q, want %q", lines, files)
+	}
+	// The installed recipes compile on their own.
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +181,7 @@ func TestAddingARecipeAlsoInstallsWhatItCallsInto(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destination, "go.mod"), []byte(module), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("go", "build", "-mod=mod", "./...")
+	command := exec.Command("go", "build", "-trimpath", "-mod=mod", "./...")
 	command.Dir = destination
 	command.Env = append(os.Environ(), "GOWORK=off")
 	if built, err := command.CombinedOutput(); err != nil {

@@ -41,7 +41,10 @@ type gtkApplication struct {
 	// mainThread is the thread that runs the loop, which is where GTK may be called.
 	mainThread int
 	// active is the window the keyboard or the pointer was last in.
-	active *gtkWindow
+	active            *gtkWindow
+	saveDialogOwner   *gtkWindow
+	dismissSaveDialog func()
+	portalExport      gtkPortalExport
 
 	tasks gtkTasks
 	// settings are the desktop's settings as last read; settingsPending says a change is being
@@ -53,6 +56,8 @@ type gtkApplication struct {
 	watched map[int]uint32
 	// Retired input contexts stay alive until the native callback stack returns.
 	retiredIMESources []uint32
+	fcitxWatch        gtkFcitxWatch
+
 	// clipboardGet and clipboardClear answer the clipboard's data callbacks, made
 	// once: purego keeps every callback it makes, so a pair per copy would retain
 	// what the user copied for the life of the process. clipboardBytes is what they
@@ -108,6 +113,7 @@ func RunGTKApplication(start platform.ApplicationStart) error {
 	}
 	defer gtkRunning.Store(nil)
 	defer application.releaseRetiredIME()
+	defer application.closeFcitxWatch()
 	callbacks()
 	application.mainThread = syscall.Gettid()
 	application.installHooks()
@@ -209,6 +215,9 @@ func (a *gtkApplication) fail(err error) {
 func (a *gtkApplication) stop() {
 	if !a.stopping {
 		a.stopping = true
+		if a.dismissSaveDialog != nil {
+			a.dismissSaveDialog()
+		}
 		if a.mainRunning {
 			a.g.mainQuit()
 		}
@@ -281,6 +290,13 @@ func (a *gtkApplication) rebuildPoll() {
 	if a.status != nil {
 		wanted[a.status.conn.FD()] = true
 	}
+	for _, w := range a.windows {
+		if w.ime != nil && w.ime.direct != nil {
+			if fd := w.ime.direct.client.FD(); fd >= 0 {
+				wanted[fd] = true
+			}
+		}
+	}
 	for fd, source := range a.watched {
 		if !wanted[fd] {
 			a.g.sourceRemove(source)
@@ -304,6 +320,14 @@ func (a *gtkApplication) serveDescriptor(fd int) {
 		a.serveDesktop()
 	case a.status != nil && a.status.conn.FD() == fd:
 		a.serveStatus()
+	default:
+		for _, w := range a.windows {
+			if w.ime != nil && w.ime.direct != nil && w.ime.direct.client.FD() == fd {
+				d := w.ime.direct
+				d.receive(d.client.Dispatch())
+				return
+			}
+		}
 	}
 }
 
@@ -578,7 +602,7 @@ func gtkWindowByID(id uintptr) *gtkWindow {
 }
 
 func gtkIMEByContext(context, id uintptr) *gtkIME {
-	if w := gtkWindowByID(id); w != nil && w.ime != nil && w.ime.current(context) {
+	if w := gtkWindowByID(id); w != nil && w.ime != nil && w.ime.direct == nil && w.ime.current(context) {
 		return w.ime
 	}
 	return nil

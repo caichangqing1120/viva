@@ -32,6 +32,9 @@ func codeCells(r rune, column, tabWidth int) int {
 	if r == '\t' {
 		return tabWidth - column%tabWidth
 	}
+	if codeBidiControl(r) {
+		return 0
+	}
 	return text.CellWidth(r)
 }
 
@@ -172,6 +175,14 @@ func (editor *CodeEditor) fitWithRepresentations(value string, cols int, wrap bo
 		if editor.text == value || editor.refit(value) {
 			return
 		}
+	}
+	if s := editor.shaping; s != nil {
+		// A refit invalidates row geometry, not the caret the viewport last
+		// followed. Keep the previous direction for configureShaping to compare.
+		clear(s.rows)
+		s.rowBytes = 0
+		s.hitValid = false
+		editor.goalActive = false
 	}
 	editor.fitted, editor.cols, editor.wrap, editor.tabWidth, editor.text = true, cols, wrap, tabWidth, value
 	editor.foldInput = append(editor.foldInput[:0], folds...)
@@ -875,6 +886,22 @@ func (editor *CodeEditor) OffsetAtY(y float32) (int, bool) {
 		at += size
 	}
 	return int(row.end), true
+}
+
+// VisualRowAtY returns the source byte span of the laid-out row at y pixels
+// from the top of the text, independent of scrolling. Soft wraps split spans
+// and folded lines are omitted. It returns false before layout or outside the
+// text, and a valid empty span for an empty row.
+func (editor *CodeEditor) VisualRowAtY(y float32) (text.Span, bool) {
+	if !editor.painted || !editor.fitted || editor.lineHeight <= 0 {
+		return text.Span{}, false
+	}
+	position := y / editor.lineHeight
+	if !(position >= 0 && position < float32(len(editor.rows))) {
+		return text.Span{}, false
+	}
+	row := editor.rows[int(position)]
+	return text.Span{Start: int(row.start), End: int(row.end)}, true
 }
 
 // LineCount is the number of logical lines of the text last painted.

@@ -258,6 +258,43 @@ static NSPasteboard *viva_pasteboard_named(const char *name) {
     return [NSPasteboard pasteboardWithName:viva_string(name)];
 }
 
+int viva_system_clipboard_source(const char *pasteboard, int rtf, size_t limit, uint8_t **data, size_t *length, char **error_message) {
+    __block int status = 1;
+    dispatch_block_t operation = ^{
+        @autoreleasepool {
+            NSPasteboardType type = rtf ? NSPasteboardTypeRTF : NSPasteboardTypeHTML;
+            NSPasteboard *board = viva_pasteboard_named(pasteboard);
+            if (![board availableTypeFromArray:@[type]]) {
+                return;
+            }
+            NSData *source = [board dataForType:type];
+            if (source == nil) {
+                viva_set_error(error_message, @"the clipboard owner did not provide the requested source");
+                status = -1;
+            } else if (source.length > limit) {
+                status = 2;
+            } else if (source.length > 0) {
+                uint8_t *copy = malloc(source.length);
+                if (copy == NULL) {
+                    viva_set_error(error_message, @"failed to allocate clipboard source");
+                    status = -1;
+                    return;
+                }
+                memcpy(copy, source.bytes, source.length);
+                *data = copy;
+                *length = source.length;
+                status = 0;
+            }
+        }
+    };
+    if (pasteboard == NULL) {
+        viva_on_main_sync(operation);
+    } else {
+        operation();
+    }
+    return status;
+}
+
 // viva_system_pasteboard_put_html writes html as public.html beside alt as
 // public.utf8-plain-text, the pair a rich copy leaves: a reader takes whichever
 // flavour it knows, and a plain reader still pastes.

@@ -19,6 +19,7 @@ int viva_system_clipboard_has_image(const char *pasteboard);
 // Status: 0 PNG returned in *data (free with viva_system_free), 1 no image,
 // 2 too large, -1 failure with *error_message.
 int viva_system_clipboard_image_png(const char *pasteboard, size_t max_png, size_t max_raw, uint8_t **data, size_t *length, char **error_message);
+int viva_system_clipboard_source(const char *pasteboard, int rtf, size_t limit, uint8_t **data, size_t *length, char **error_message);
 // Puts an image (PNG bytes) on a named pasteboard, as TIFF when as_tiff is set.
 int viva_system_pasteboard_put_image(const char *pasteboard, const uint8_t *png, size_t length, int as_tiff);
 // Puts an image (PNG bytes) on a named pasteboard as public.png beside its

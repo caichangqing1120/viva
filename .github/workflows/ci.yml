@@ -166,11 +166,13 @@ jobs:
         run: |
           sudo apt-get install -y libpangocairo-1.0-0 fonts-noto-color-emoji ||
             { sudo apt-get update && sudo apt-get install -y libpangocairo-1.0-0 fonts-noto-color-emoji; }
-          go test ./internal/platform/linux -run '^TestTextEngineRasterizesProportionalText$' -count=1 -v
+          go test ./internal/platform/linux -run '^(TestTextEngineRasterizesProportionalText$|TestFittedPango)' -count=1 -v
+          go test ./components -run '^TestCodeEditorPango' -count=1 -v
+          go test ./app -run '^TestPainterPublishesBothImeAnchorsOfOneBidiOffset$' -count=1 -v
       - name: GTK optional capability contracts
         run: |
           go vet -tags vivagtk ./app ./internal/platform/linux
-          go test -tags vivagtk ./internal/platform/linux -run '^Test(GTK(WaylandAlwaysOnTopReportsUnsupported|ClipboardFileWriteReportsUnsupportedWithoutASetter|ClipboardImageWriteReportsUnsupportedWithoutSetWithData)|APartition(KeepsItsStoreInTheUsersDirectories|FollowsTheXdgDirectories|IsNamedAfterTheApplicationWithoutAClass))$' -count=1
+          go test -tags vivagtk ./internal/platform/linux -run '^Test(GTK(WaylandAlwaysOnTopReportsUnsupported|ClipboardFileWriteReportsUnsupportedWithoutASetter|ClipboardImageWriteReportsUnsupportedWithoutSetWithData|MinimumSize(FitsWaylandOutput|FollowsCompositorGeometry))|APartition(KeepsItsStoreInTheUsersDirectories|FollowsTheXdgDirectories|IsNamedAfterTheApplicationWithoutAClass))$' -count=1
       # The Linux package is not part of the sharded run (it drives X11), so the
       # titlebar contracts that do not need a server name their tests here.
       - name: Titlebar and window contracts
@@ -410,6 +412,8 @@ jobs:
         run: go test ./internal/platform/windows -run '^Test(DirectTextLayoutOriginByValue|HiddenNativeEditorDoesNotDrawColorEmoji|TextEngineRasterizesProportionalText|RegisteredFontDrawsFallbackCharacters)$' -count=1 -v
       - name: Promised file drag
         run: go test ./internal/platform/windows -run '^Test(ThePromiseDataObject|ThePromiseStream|ThePromiseEnumerator|PromiseNames)' -count=1 -v
+      - name: Native DirectWrite fitted bidi text
+        run: go test ./internal/platform/windows ./components -run '^Test(Fitted(DirectWrite|WindowsClusters)|CodeEditorDirectWrite)' -count=1 -v
       # The installer contracts, including WinVerifyTrust's struct layout, only
       # compile and run on Windows.
       - name: Update installer contracts
@@ -438,6 +442,8 @@ jobs:
         run: |
           if ((go env GOARCH) -ne 'arm64') { throw 'Expected native ARM64 Go' }
           go test ./internal/platform/windows -run '^Test(DirectTextLayoutOriginByValue|RegisteredFontDrawsFallbackCharacters)$' -count=1 -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test ./internal/platform/windows ./components -run '^Test(Fitted(DirectWrite|WindowsClusters)|CodeEditorDirectWrite)' -count=1 -v
       - name: Native ARM64 window decoration changes
         run: go test ./internal/platform/windows -run '^TestNativeWindowDecoration' -count=1 -v -timeout=90s
 

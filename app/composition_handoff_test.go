@@ -9,6 +9,42 @@ import (
 	"github.com/vivaui/viva/text"
 )
 
+func TestPainterCancelsOwnerScopedLegacyPreeditOnHandoff(t *testing.T) {
+	for _, cancel := range []bool{true, false} {
+		first, second := text.NewEditor("abc"), text.NewEditor("other")
+		first.SetSelection(text.Range{Start: 1, End: 2})
+		current := first
+		var canvas gfx.Canvas
+		config := Config{Title: "legacy composition handoff", Width: 200, Height: 80}
+		config.Paint = func(canvas *gfx.Canvas, _ gfx.Size) {
+			canvas.HitWithOptions(gfx.Item(11), gfx.Rect{Width: 120, Height: 24}, "Input", gfx.HitOptions{Role: gfx.RoleTextField, Autofocus: true})
+		}
+		config.TextInput = func(context TextInputContext) *TextInput {
+			return &TextInput{Bounds: context.Bounds, FontSize: 13, Editor: current}
+		}
+		owner := newTestPainter(t, &canvas, config)
+		owner.syncTextInput()
+		if _, err := owner.applyTextEvent(platform.TextEvent{Kind: platform.TextSetMarked, Text: "ni", CancelOnHandoff: cancel}); err != nil {
+			t.Fatal(err)
+		}
+		owner.syncTextInput()
+		if !first.CompositionActive() {
+			t.Fatal("unchanged owner lost its composition")
+		}
+		current = second
+		owner.syncTextInput()
+		if cancel && (first.CompositionActive() || first.String() != "abc" || first.Selection() != (text.Range{Start: 1, End: 2})) {
+			t.Fatalf("outgoing preedit not canceled: %q, selection=%v, active=%t", first.String(), first.Selection(), first.CompositionActive())
+		}
+		if !cancel && (!first.CompositionActive() || first.String() != "anic") {
+			t.Fatalf("ordinary legacy preedit changed: %q, active=%t", first.String(), first.CompositionActive())
+		}
+		if owner.activeEditor != second || second.String() != "other" {
+			t.Fatal("outgoing composition changed the successor")
+		}
+	}
+}
+
 func TestPainterTentativeHandoffRetainsInstalledOwner(t *testing.T) {
 	for _, policy := range []string{"document", "terminal", "secure"} {
 		for _, mode := range []string{"editor replacement", "cached provider", "cached external switch", "provider disabled", "target replacement", "subpixel disabled", "provider removed", "same owner", "geometry only"} {

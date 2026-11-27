@@ -195,6 +195,41 @@ func TestAccessibilitySetTextReplacesTheFieldAndTellsThePlatformEditor(t *testin
 	}
 }
 
+func TestAccessibilityPreservesSelectionDirection(t *testing.T) {
+	var canvas gfx.Canvas
+	field := gfx.Item(1)
+	editor := text.NewEditor("a\u732bb\U0001f600c")
+	bounds := gfx.Rect{Width: 150, Height: 24}
+	config := Config{Title: "text", Width: 200, Height: 80}
+	config.Paint = func(canvas *gfx.Canvas, _ gfx.Size) {
+		canvas.HitWithOptions(field, bounds, "Name", gfx.HitOptions{Role: gfx.RoleTextField, Value: editor.String()})
+	}
+	config.TextInput = func(TextInputContext) *TextInput {
+		return &TextInput{Editor: editor, Bounds: bounds, FontSize: 13}
+	}
+	painter := newTestPainter(t, &canvas, config)
+	for _, want := range []platform.AccessibilitySelection{
+		{Start: 1, End: 4, Valid: true},
+		{Start: 4, End: 1, Valid: true},
+		{Start: 1, End: 1, Valid: true},
+	} {
+		var out presented
+		ok, err := painter.accessibilityRequest(platform.AccessibilityRequest{
+			Node: field, Action: platform.AccessibilitySetSelection, Start: want.Start, End: want.End,
+		}, out.present)
+		if !ok || err != nil || len(out.frames) == 0 {
+			t.Fatalf("set selection %+v: accepted=%v frames=%d err=%v", want, ok, len(out.frames), err)
+		}
+		if got := editor.Caret(); got != int(want.End) {
+			t.Fatalf("editor caret = %d, want %d", got, want.End)
+		}
+		last := out.frames[len(out.frames)-1]
+		if len(last.Accessibility) != 1 || last.Accessibility[0].Selection != want {
+			t.Errorf("published accessibility nodes = %+v, want selection %+v", last.Accessibility, want)
+		}
+	}
+}
+
 func TestAccessibilityDoesNotEditReadOnlyOrSecureFields(t *testing.T) {
 	var canvas gfx.Canvas
 	config := Config{Title: "text", Width: 200, Height: 80}

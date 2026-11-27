@@ -40,6 +40,9 @@ func (editor *Editor) ClearChangeHistory() {
 		dirty = dirty || history.save < 0 || history.current != history.save
 	}
 	editor.ClearHistory()
+	if history := editor.historyState(); history != nil {
+		history.detach = -1
+	}
 	if dirty {
 		if point != nil {
 			*point = -1

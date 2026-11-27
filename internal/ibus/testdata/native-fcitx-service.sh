@@ -19,6 +19,9 @@ export VIVA_FCITX_BACKEND=$backend
 unset IBUS_ADDRESS
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/fcitx5" "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
 cp "$fixture_dir/fcitx-profile" "$XDG_CONFIG_HOME/fcitx5/profile"
+if [ "${VIVA_GTK_FCITX_HANDOFF:-0}" = 1 ]; then
+    printf '[Hotkey/TriggerKeys]\n0=Control+space\n\n[Behavior]\nShareInputState=No\n' > "$XDG_CONFIG_HOME/fcitx5/config"
+fi
 session_pid=
 cleanup() {
     if [ -n "$session_pid" ]; then

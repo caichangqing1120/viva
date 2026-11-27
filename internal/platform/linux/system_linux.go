@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -116,7 +117,7 @@ func readSelectionTextX11(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, kind, accepted, err := readSelectionBytes(api, connection, requestor, selection, targets, property, 1<<16)
+	data, kind, accepted, err := readSharedSelectionBytes(api, connection, requestor, selection, targets, property, 1<<16)
 	if err != nil {
 		return "", err
 	}
@@ -152,6 +153,7 @@ func readSelectionTextX11(name string) (string, error) {
 		}
 		value, accepted, err := read(api, connection, requestor, selection, textTarget, property)
 		if err != nil {
+			retireClipboardRequestor()
 			return "", err
 		}
 		if accepted {
@@ -162,7 +164,11 @@ func readSelectionTextX11(name string) (string, error) {
 		}
 	}
 	if wantLatin1 {
-		return readLegacySelection(api, connection, requestor, selection, property)
+		value, err := readLegacySelection(api, connection, requestor, selection, property)
+		if err != nil {
+			retireClipboardRequestor()
+		}
+		return value, err
 	}
 	return "", nil
 }
@@ -241,7 +247,7 @@ func clipboardOffersImage() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	data, kind, accepted, err := readSelectionBytes(api, connection, requestor, clipboard, targets, property, 1<<16)
+	data, kind, accepted, err := readSharedSelectionBytes(api, connection, requestor, clipboard, targets, property, 1<<16)
 	if err != nil {
 		return false, err
 	}
@@ -295,7 +301,7 @@ func ClipboardImagePNG() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, _, accepted, err := readSelectionBytes(api, connection, requestor, clipboard, png, property, platform.MaxClipboardImageBytes)
+	data, _, accepted, err := readSharedSelectionBytes(api, connection, requestor, clipboard, png, property, platform.MaxClipboardImageBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +352,7 @@ func ClipboardFiles() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, kind, accepted, err := readSelectionBytes(api, connection, requestor, clipboard, targets, property, 1<<16)
+	data, kind, accepted, err := readSharedSelectionBytes(api, connection, requestor, clipboard, targets, property, 1<<16)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +375,7 @@ func ClipboardFiles() ([]string, error) {
 		if !offered[target] {
 			continue
 		}
-		list, _, accepted, err := readSelectionBytes(api, connection, requestor, clipboard, target, property, maxClipboardFileListBytes)
+		list, _, accepted, err := readSharedSelectionBytes(api, connection, requestor, clipboard, target, property, maxClipboardFileListBytes)
 		if errors.Is(err, platform.ErrClipboardImageTooLarge) {
 			return nil, fmt.Errorf("linux: the clipboard's file list is larger than %d MiB", maxClipboardFileListBytes>>20)
 		}
@@ -454,11 +460,16 @@ func ownedClipboardFiles() ([]string, bool) {
 // and a round trip per atom for each paste. A read holds mu from
 // openSelectionRequest to closeClipboardRequest, so two reads take turns: the
 // replies a read waits for arrive on this connection and only it may take
-// them. A connection the X server dropped is made again by the next read.
+// them. A connection the X server dropped or whose display changed is made
+// again by the next read.
+// An interrupted read retires the requestor so late replies cannot reach a
+// later read.
 var selections struct {
 	mu         sync.Mutex
 	api        *xcbAPI
 	connection uintptr
+	display    string
+	screen     *xcbScreen
 	requestor  uint32
 }
 
@@ -471,28 +482,40 @@ func openClipboardRequest() (api *xcbAPI, connection uintptr, requestor, clipboa
 // openSelectionRequest is openClipboardRequest for any selection, by name.
 func openSelectionRequest(name string) (api *xcbAPI, connection uintptr, requestor, selection, owner uint32, err error) {
 	selections.mu.Lock()
-	if selections.connection != 0 && selections.api.connectionHasError(selections.connection) != 0 {
+	display := os.Getenv("DISPLAY")
+	if selections.connection != 0 && (selections.display != display || selections.api.connectionHasError(selections.connection) != 0) {
 		selections.api.disconnect(selections.connection)
 		selections.connection = 0
+		selections.requestor = 0
+	}
+	if display == "" {
+		selections.mu.Unlock()
+		return nil, 0, 0, 0, 0, fmt.Errorf("linux: connect to X server: DISPLAY is empty")
 	}
 	if selections.connection == 0 {
 		var screen *xcbScreen
-		api, connection, screen, err = openSystemConnection()
+		xdisplay := cString(display)
+		api, connection, screen, err = openSystemConnectionAt(&xdisplay[0])
 		if err != nil {
 			selections.mu.Unlock()
 			return nil, 0, 0, 0, 0, err
 		}
 		api.atoms = make(map[string]uint32, 16)
+		selections.api, selections.connection = api, connection
+		selections.display = display
+		selections.screen = screen
+	}
+	api, connection, requestor = selections.api, selections.connection, selections.requestor
+	if requestor == 0 {
+		screen := selections.screen
 		requestor = api.generateID(connection)
 		// PropertyNotify events pace an INCR transfer: the owner writes each chunk
 		// when the previous one is deleted.
 		eventMask := uint32(xcbEventPropertyChange)
 		api.createWindow(connection, xcbCopyFromParent, requestor, screen.Root, 0, 0, 1, 1, 0, xcbWindowClassInput, screen.RootVisual, xcbCWEventMask, &eventMask)
-		selections.api, selections.connection, selections.requestor = api, connection, requestor
+		selections.requestor = requestor
 	}
-	api, connection, requestor = selections.api, selections.connection, selections.requestor
-	// A reply that came after the read that asked for it gave up is not this
-	// read's answer.
+	// Discard queued notifications from the previous read.
 	for event := api.pollForEvent(connection); event != nil; event = api.pollForEvent(connection) {
 		api.free(event)
 	}
@@ -510,6 +533,22 @@ func openSelectionRequest(name string) (api *xcbAPI, connection uintptr, request
 // next one, and kept.
 func closeClipboardRequest() {
 	selections.mu.Unlock()
+}
+
+// A failed conversion can leave an owner about to reply or write another INCR
+// chunk. The next read must use a new requestor even on the same connection.
+func retireClipboardRequestor() {
+	selections.api.destroyWindow(selections.connection, selections.requestor)
+	selections.api.flush(selections.connection)
+	selections.requestor = 0
+}
+
+func readSharedSelectionBytes(api *xcbAPI, connection uintptr, requestor, selection, target, property uint32, limit int) ([]byte, uint32, bool, error) {
+	data, kind, accepted, err := readSelectionBytes(api, connection, requestor, selection, target, property, limit)
+	if err != nil {
+		retireClipboardRequestor()
+	}
+	return data, kind, accepted, err
 }
 
 // readSelectionBytes asks the selection owner to convert to target and returns
@@ -824,6 +863,12 @@ func SaveFile(options SaveFileOptions) (string, bool, error) {
 	if !errors.Is(err, errServiceMissing) {
 		return firstPath(paths), canceled, singlePathError(paths, canceled, err, "save file")
 	}
+	if hooks := shellHooks.Load(); hooks != nil && hooks.saveFileDialog != nil {
+		path, canceled, err := hooks.saveFileDialog(options.Title, name, filters)
+		if !errors.Is(err, errServiceMissing) {
+			return path, canceled, err
+		}
+	}
 	backend, path, err := fileDialogBackend()
 	if err != nil {
 		return "", false, err
@@ -841,6 +886,27 @@ func SaveFile(options SaveFileOptions) (string, bool, error) {
 		return "", false, fmt.Errorf("linux: save file dialog returned %d paths", len(paths))
 	}
 	return paths[0], false, nil
+}
+
+func portalChoose(request portalFileRequest) (paths []string, canceled bool, err error) {
+	paths, _, canceled, err = portalChooseWithChoices(request)
+	return paths, canceled, err
+}
+
+func portalChooseWithChoices(request portalFileRequest) ([]string, map[string]string, bool, error) {
+	if hooks := shellHooks.Load(); hooks != nil && hooks.preparePortalChooser != nil {
+		parent, resume, err := hooks.preparePortalChooser()
+		if resume != nil {
+			defer resume()
+		}
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if parent != "" {
+			request.parent = parent
+		}
+	}
+	return requestPortalFile(request)
 }
 
 func SaveFileWithCheckbox(options SaveFileOptions, label string, initial bool) (string, bool, bool, error) {
@@ -1158,12 +1224,16 @@ func unsupported(detail string) error {
 }
 
 func openSystemConnection() (*xcbAPI, uintptr, *xcbScreen, error) {
+	return openSystemConnectionAt(nil)
+}
+
+func openSystemConnectionAt(display *byte) (*xcbAPI, uintptr, *xcbScreen, error) {
 	api, err := loadXCB()
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	var screenIndex int32
-	connection := api.connect(nil, &screenIndex)
+	connection := api.connect(display, &screenIndex)
 	if connection == 0 || api.connectionHasError(connection) != 0 {
 		if connection != 0 {
 			api.disconnect(connection)

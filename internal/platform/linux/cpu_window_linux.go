@@ -145,6 +145,20 @@ func (renderer *cpuWindowRenderer) presentFull() error {
 	return renderer.present()
 }
 
+// X11 can discard pixels covered by another window even though the scene has
+// not changed. Restore the pixels from the last present without repainting it.
+func (renderer *cpuWindowRenderer) restoreExposedPixels(expose *xcbExposeEvent) error {
+	if renderer.full {
+		return renderer.presentFull()
+	}
+	canvas := renderer.scene.canvas
+	if renderer.margin > 0 {
+		canvas = renderer.out
+	}
+	x, y := int(expose.X), int(expose.Y)
+	return renderer.push(canvas, render.Scissor{Left: x, Top: y, Right: x + int(expose.Width), Bottom: y + int(expose.Height)})
+}
+
 // composeAll draws the whole window again: the shadow, the content over it, and
 // the rounded corners where the two meet.
 func (renderer *cpuWindowRenderer) composeAll() {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vivaui/viva/internal/input"
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/text"
 )
@@ -22,14 +23,35 @@ type gtkFcitxProbe struct {
 	live      []string
 	key       int
 	contextID func(uintptr) uintptr
+	endings   []string
+	firstMode int
+	modes     int
 }
 
 func TestGTKNativeFcitxComposition(t *testing.T) {
+	testGTKNativeFcitx(t, 0, 2, "commit", "escape", "reset", "native-focus-out", "window-focus-out", "application-discard")
+}
+
+func TestGTKNativeFcitxDeclinedShortcut(t *testing.T) {
+	if os.Getenv("VIVA_IBUS_ENGINE") != "pinyin" {
+		t.Skip("requires the Fcitx Pinyin shortcut fixture")
+	}
+	for mode := range 2 {
+		t.Run(fmt.Sprintf("tentative=%t", mode != 0), func(t *testing.T) {
+			testGTKNativeFcitx(t, mode, 1, "declined-shortcut")
+		})
+	}
+}
+
+func testGTKNativeFcitx(t *testing.T, firstMode, modes int, endings ...string) {
+	t.Helper()
+	t.Setenv("VIVA_GTK_FCITX_DIRECT", "0") // This probe exercises GtkIMContext itself.
 	if os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" {
 		t.Skip("native Fcitx GTK probe requires the private Fcitx fixture")
 	}
-	testGTKNativeTentativeProbe(t, 10, func(p *gtkTentativeProbe) {
-		probe := &gtkFcitxProbe{p: p, engine: os.Getenv("VIVA_IBUS_ENGINE")}
+	trials := modes * len(endings)
+	testGTKNativeTentativeProbe(t, trials, func(p *gtkTentativeProbe) {
+		probe := &gtkFcitxProbe{p: p, engine: os.Getenv("VIVA_IBUS_ENGINE"), endings: endings, firstMode: firstMode, modes: modes}
 		p.asynchronous, p.keyIngress = true, true
 		backend := typeNameOf(p.w.g, p.w.g.gdkDisplayDefault())
 		want := "GdkX11Display"
@@ -38,7 +60,7 @@ func TestGTKNativeFcitxComposition(t *testing.T) {
 		}
 		t.Logf("native GTK backend=%s engine=%s", backend, probe.engine)
 		if backend != want || !p.w.g.lookup(&probe.contextID, "gtk_im_multicontext_get_context_id") {
-			for range 10 {
+			for range trials {
 				probe.record(fmt.Sprintf("native GTK backend=%s, want=%s, context getter=%t", backend, want, probe.contextID != nil))
 			}
 			p.w.destroy()
@@ -49,6 +71,7 @@ func TestGTKNativeFcitxComposition(t *testing.T) {
 }
 
 func TestGTKNativeFcitxWindowClose(t *testing.T) {
+	t.Setenv("VIVA_GTK_FCITX_DIRECT", "0")
 	if os.Getenv("VIVA_IBUS_FRONTEND") != "fcitx5" {
 		t.Skip("native Fcitx close probe requires the private Fcitx fixture")
 	}
@@ -188,13 +211,13 @@ func (probe *gtkFcitxProbe) wait(check func() (bool, error), next func()) {
 }
 
 func (probe *gtkFcitxProbe) begin() {
-	if probe.trial == 10 {
+	if probe.trial == probe.modes*len(probe.endings) {
 		probe.p.w.destroy()
 		return
 	}
 	p := probe.p
-	p.tentative = probe.trial >= 5
-	probe.ending = []string{"commit", "escape", "reset", "native-focus-out", "window-focus-out"}[probe.trial%5]
+	p.tentative = probe.firstMode+probe.trial/len(probe.endings) != 0
+	probe.ending = probe.endings[probe.trial%len(probe.endings)]
 	editor := text.NewEditor("abc")
 	editor.SetSelection(text.Range{Start: 1, End: 2})
 	if p.tentative && !editor.EnableTentativeComposition() {
@@ -283,6 +306,68 @@ func (probe *gtkFcitxProbe) settle() {
 		p.w.ime.active, p.w.ime.focused = false, false
 	case "window-focus-out":
 		p.w.ime.setFocused(false)
+	case "declined-shortcut":
+		before := platform.EditorState(p.editor)
+		calls := 0
+		p.w.config.OnShortcut = func(event platform.KeyEvent) (platform.Frame, bool, error) {
+			if (event.Text != "S" && event.Text != "s") || event.Modifiers != input.ModifierControl|input.ModifierShift {
+				return platform.Frame{}, false, nil
+			}
+			calls++
+			return platform.Frame{}, true, nil
+		}
+		if err := p.press(context, 'S', gdkControlMask|gdkShiftMask); err != nil {
+			p.w.config.OnShortcut = nil
+			probe.finish(err.Error())
+			return
+		}
+		probe.later(150*time.Millisecond, func() {
+			p.w.config.OnShortcut = nil
+			if calls != 1 || platform.EditorState(p.editor) != before {
+				probe.finish(fmt.Sprintf("declined Ctrl+Shift+S delivery: shortcuts=%d text=%q, want one shortcut and unchanged preedit %q", calls, p.editor.String(), before.Value))
+				return
+			}
+			// Finish via a real input-method key so the next trial does not
+			// inherit live composition while Fcitx establishes a new context.
+			probe.want = "a\u4f60\u597dc"
+			if err := p.press(context, ' ', 0); err != nil {
+				probe.finish(err.Error())
+				return
+			}
+			probe.wait(func() (bool, error) {
+				return p.editor.String() == probe.want && !p.w.text.state.Composing, nil
+			}, func() { probe.finish("") })
+		})
+		return
+	case "application-discard":
+		p.w.g.objectRef(context)
+		defer p.w.g.objectUnref(context)
+		if !p.editor.CancelComposition() {
+			probe.finish("editor did not discard live preedit")
+			return
+		}
+		field := p.w.text.input
+		settled := platform.EditorState(p.editor)
+		undo, redo, events := p.editor.CanUndo(), p.editor.CanRedo(), len(p.events)
+		probe.want = settled.Value
+		field.State = settled
+		p.w.present(platform.Frame{TextInput: platform.TextInputUpdate{Changed: true, Input: &field}}, nil)
+		if p.editor.String() != probe.want {
+			probe.finish(fmt.Sprintf("native reset reinserted discarded input: got %q, want %q", p.editor.String(), probe.want))
+			return
+		}
+		// The module can deliver a result after the native reset/focus call returns.
+		signal, stale := cString("commit"), cString("stale")
+		p.keys.emit(context, &signal[0], &stale[0])
+		probe.later(50*time.Millisecond, func() {
+			if platform.EditorState(p.editor) != settled || len(p.events) != events ||
+				p.editor.CanUndo() != undo || p.editor.CanRedo() != redo || !p.w.ime.active {
+				probe.finish(fmt.Sprintf("a result after discard changed the editor: text=%q, events=%d, active=%t", p.editor.String(), len(p.events), p.w.ime.active))
+				return
+			}
+			probe.finish("")
+		})
+		return
 	}
 	probe.wait(func() (bool, error) {
 		return p.editor.String() == probe.want && !p.w.text.state.Composing, nil
@@ -319,10 +404,10 @@ func (probe *gtkFcitxProbe) finish(failure string) {
 			wantResults--
 			wantCancels++
 		}
-		if p.tentative && (results != wantResults || cancels != wantCancels) {
+		if p.tentative && probe.ending != "application-discard" && (results != wantResults || cancels != wantCancels) {
 			failures = append(failures, fmt.Sprintf("results/cancels=%d/%d, want=%d/%d", results, cancels, wantResults, wantCancels))
 		}
-		if windowBlur || !p.tentative && probe.engine == "pinyin" {
+		if windowBlur || !p.tentative && probe.engine == "pinyin" && probe.ending != "application-discard" {
 			kind := platform.TextInsert
 			if windowBlur || probe.ending == "escape" {
 				kind = platform.TextCancelComposition
@@ -343,13 +428,13 @@ func (probe *gtkFcitxProbe) finish(failure string) {
 		}
 	}
 	probe.record(failures...)
-	if failure == "" && !p.tentative && probe.engine == "pinyin" && probe.ending != "escape" && !windowBlur {
+	if failure == "" && !p.tentative && probe.engine == "pinyin" && probe.ending != "escape" && probe.ending != "application-discard" && !windowBlur {
 		if !p.editor.Undo() || p.editor.String() != "abc" || p.editor.CanUndo() || !p.editor.Redo() || p.editor.String() != probe.want {
 			last := &p.trials[len(p.trials)-1]
 			last.failures = append(last.failures, "commit did not round-trip in a single undo unit")
 		}
 	}
-	if failure == "" && p.tentative {
+	if failure == "" && p.tentative && probe.ending != "application-discard" {
 		undos := []string{"ac", "abc"}
 		if probe.engine == "hangul" {
 			if !windowBlur {

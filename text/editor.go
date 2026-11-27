@@ -67,6 +67,7 @@ type textChange struct {
 // populate caches. When attached to a window, access it only on that window's
 // thread, where native input and painting run. Read a string snapshot there
 // before starting background work; the returned string remains valid after edits.
+// An Editor must not be copied after first use.
 type Editor struct {
 	// OnDeleteAtEdge runs when DeleteBackward finds nothing before the caret to
 	// remove (forward false) or DeleteForward finds nothing after it (forward
@@ -74,9 +75,10 @@ type Editor struct {
 	// last tag". It runs on the event-loop thread; nil leaves the key a no-op.
 	OnDeleteAtEdge func(forward bool)
 
-	runes  runeStore
-	anchor int
-	caret  int
+	inputOwner editorInputOwner
+	runes      runeStore
+	anchor     int
+	caret      int
 	// secondary is the multi-selection's other selections, normalized: ordered
 	// and disjoint from the primary. It is empty in every editor that never
 	// calls AddSelection or SetSelections. See multiselection.go.

@@ -51,9 +51,10 @@ type painter struct {
 	activeText *TextInput
 	// activeEditor remembers the installed owner independently of a provider's
 	// reusable TextInput, which the application may mutate between frames.
-	activeEditor *text.Editor
-	onTextEvent  platform.TextHandler
-	textEpoch    uint64
+	activeEditor          *text.Editor
+	cancelLegacyOnHandoff bool
+	onTextEvent           platform.TextHandler
+	textEpoch             uint64
 	// placing is a press on a text field that lays its rows out itself being held
 	// (see placeCaret), from the rune index placeAnchor. placeUnit is the click
 	// unit a multi-click press took (2 a word, 3 a line) and placeUnitRange the
@@ -365,6 +366,18 @@ func (painter *painter) pointerInputOf(event platform.PointerEvent, handled *boo
 			return platform.Frame{}, painter.syncCursor()
 		}
 		return platform.Frame{}, nil
+	}
+	if painter.coalesceInput && painter.scheduleFrame != nil && painter.focus.Carries() {
+		// Settle an event-pass focus request against the new layout before the
+		// next native key. A click can close a menu or change the focused hit.
+		return painter.repaint()
+	}
+	if painter.coalesceInput && painter.scheduleFrame != nil && painter.focus.Focused() != beforeFocus {
+		// The platform can receive a key before the deferred paint runs.
+		// Publish the new text owner now, using the last paint's hit geometry.
+		input := painter.syncTextInput()
+		painter.scheduleFrame(0)
+		return platform.Frame{TextInput: input}, nil
 	}
 	return painter.repaintAfterInput()
 }
@@ -1527,6 +1540,8 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 func (painter *painter) settleTextInput() {
 	editor := painter.activeEditor
 	painter.activeEditor = nil
+	cancelLegacy := painter.cancelLegacyOnHandoff
+	painter.cancelLegacyOnHandoff = false
 	if editor == nil || !painter.textEnabled {
 		return
 	}
@@ -1539,6 +1554,8 @@ func (painter *painter) settleTextInput() {
 		if phase == text.CompositionCommit && painter.nativeText.Secure {
 			editor.ClearHistory()
 		}
+	} else if cancelLegacy {
+		editor.CancelComposition()
 	}
 	editor.BreakUndoGroup()
 }
@@ -1600,8 +1617,9 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 		return painter.nativeText.State, nil
 	}
 	var next TextState
+	var accepted bool
 	if editor != nil {
-		accepted := appEvent.Apply(editor)
+		accepted = appEvent.Apply(editor)
 		if painter.nativeText.Secure && accepted && !editor.TentativeCompositionActive() {
 			editor.ClearHistory()
 		}
@@ -1620,6 +1638,11 @@ func (painter *painter) applyTextEvent(event platform.TextEvent) (platform.TextS
 		native := painter.nativeText.State
 		native.Redraw = true
 		return native, nil
+	}
+	if !next.Composing {
+		painter.cancelLegacyOnHandoff = false
+	} else if editor != nil && accepted && event.Kind == platform.TextSetMarked && !explicit {
+		painter.cancelLegacyOnHandoff = event.CancelOnHandoff
 	}
 	painter.textEpoch++
 	painter.activeText.State = next
@@ -1725,7 +1748,7 @@ func (painter *painter) structuresUnchanged() bool {
 		}
 	} else if !painter.publishedTextField ||
 		painter.activeText.State.Value != painter.publishedText ||
-		painter.activeText.State.Selection != painter.publishedSelection ||
+		accessibilityTextSelection(painter.activeText.State) != painter.publishedSelection ||
 		painter.activeText.State.Composition != painter.publishedCompose ||
 		painter.activeText.State.Composing != painter.publishedComposing {
 		return false
@@ -1836,7 +1859,7 @@ func (painter *painter) recordHitStructures() {
 	painter.publishedTextField = painter.activeText != nil
 	if painter.activeText != nil {
 		painter.publishedText = painter.activeText.State.Value
-		painter.publishedSelection = painter.activeText.State.Selection
+		painter.publishedSelection = accessibilityTextSelection(painter.activeText.State)
 		painter.publishedCompose = painter.activeText.State.Composition
 		painter.publishedComposing = painter.activeText.State.Composing
 	}
@@ -2018,10 +2041,18 @@ func (painter *painter) accessibilityNode(hit *gfx.Hit, focused gfx.ID) platform
 	}
 	if node.Focused && !hit.ID.IsZero() && painter.activeText != nil && !hit.Secure &&
 		(hit.Role == gfx.RoleTextField || hit.Role == gfx.RoleCombobox) && painter.activeText.State.Value == hit.Value {
-		selection := painter.activeText.State.Selection
+		selection := accessibilityTextSelection(painter.activeText.State)
 		node.Selection = platform.AccessibilitySelection{Start: int32(selection.Start), End: int32(selection.End), Valid: true}
 	}
 	return node
+}
+
+func accessibilityTextSelection(state TextState) TextRange {
+	selection := state.Selection
+	if state.SelectionReversed {
+		selection.Start, selection.End = selection.End, selection.Start
+	}
+	return selection
 }
 
 // labelPair is a label hit waiting for the control it names.

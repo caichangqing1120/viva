@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 	"github.com/vivaui/viva/gfx"
@@ -106,10 +107,14 @@ func (p *gtkTentativeProbe) observe() {
 }
 
 func (p *gtkTentativeProbe) install(editor *text.Editor) {
+	p.installField(editor, true)
+}
+
+func (p *gtkTentativeProbe) installField(editor *text.Editor, multiline bool) {
 	p.editor = editor
 	field := platform.TextInput{
 		Target: gfx.Item(1), X: 20, Y: 20, Width: 300, Height: 100, FontSize: 16,
-		Multiline: true, Color: platform.Color{Alpha: 1}, State: platform.EditorState(editor),
+		Multiline: multiline, Color: platform.Color{Alpha: 1}, State: platform.EditorState(editor),
 		OnEvent: func(event platform.TextEvent) (platform.TextState, error) {
 			p.events = append(p.events, event)
 			if p.reject != nil {
@@ -830,6 +835,61 @@ func TestGTKNativeSameTargetOwnership(t *testing.T) {
 
 func TestGTKNativeTentativeEndOrdering(t *testing.T) {
 	testGTKNativeTentativeProbe(t, 5, (*gtkTentativeProbe).endOrdering)
+}
+
+func TestGTKNativeTentativeServiceLossRetiresPreedit(t *testing.T) {
+	for _, trial := range []struct {
+		name      string
+		tentative bool
+	}{{"document", true}, {"ordinary field", false}} {
+		t.Run(trial.name, func(t *testing.T) {
+			testGTKNativeTentativeProbe(t, 1, func(p *gtkTentativeProbe) {
+				p.tentative, p.composingTrial = trial.tentative, trial.tentative
+				editor := text.NewEditor("abc")
+				editor.SetSelection(text.Range{Start: 1, End: 2})
+				if trial.tentative && !editor.EnableTentativeComposition() {
+					p.install(editor)
+					p.record("service loss", "enable refused")
+					return
+				}
+				p.install(editor)
+				if err := p.compose(); err != nil {
+					p.record("service loss", err.Error())
+					return
+				}
+				a, ime := p.w.app, p.w.ime
+				context := p.keys.ref(ime.ctx)
+				defer p.w.g.objectUnref(context)
+				// Drive a service transition separately from the real daemon integration probe.
+				module := cString("fcitx")
+				a.fcitxWatch.contextID = func(uintptr) uintptr { return uintptr(unsafe.Pointer(&module[0])) }
+				a.fcitxWatch.present = 3
+				a.fcitxVanished(1)
+				var failures []string
+				if ime.ctx != context || p.editor.String() != "au3A9c" {
+					failures = append(failures, "preedit cleared while the other service was still present")
+				}
+				a.fcitxVanished(2)
+				signal, stale := cString("commit"), cString("stale")
+				p.keys.emit(context, &signal[0], &stale[0])
+				want := "ac"
+				if !trial.tentative {
+					want = "abc"
+					if selection := p.editor.Selection(); selection != (text.Range{Start: 1, End: 2}) {
+						failures = append(failures, fmt.Sprintf("legacy selection after service loss: %v", selection))
+					}
+				}
+				if ime.ctx == 0 || ime.ctx == context || p.editor.String() != want || ime.composing() {
+					failures = append(failures, fmt.Sprintf("service loss left a stale context or text: %q", p.editor.String()))
+				}
+				p.composingTrial = false
+				if err := p.press(ime.ctx, 'x', 0); err != nil || p.editor.String() != "axc" {
+					failures = append(failures, fmt.Sprintf("first key after service loss: text=%q, err=%v", p.editor.String(), err))
+				}
+				p.record("service loss", failures...)
+			})
+		})
+	}
 }
 
 func TestGTKNativeTentativeCallbackHandoff(t *testing.T) {

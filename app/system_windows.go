@@ -17,6 +17,10 @@ func nativeSetClipboardImage(png []byte) error { return windowsplatform.SetClipb
 
 func nativeClipboardFiles() ([]string, error) { return windowsplatform.ClipboardFiles() }
 
+func nativeClipboardSource(format ClipboardSourceFormat, limit int) ([]byte, error) {
+	return windowsplatform.ClipboardSource(format, limit)
+}
+
 func nativeSetClipboardFiles(paths []string) error { return windowsplatform.SetClipboardFiles(paths) }
 
 func nativeSetClipboardFilePromises(files []FilePromise, released func()) error {

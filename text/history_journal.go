@@ -428,7 +428,7 @@ func (editor *Editor) captureHistoryReplay(edit *historyEdit, inverse bool) {
 	editor.appendHistoryFrame(steps, before, running, current)
 }
 
-func (editor *Editor) resetHistoryAfterClear() {
+func (editor *Editor) resetHistoryAfterClear(detach int) {
 	history := editor.historyState()
 	if history == nil {
 		return
@@ -437,7 +437,7 @@ func (editor *Editor) resetHistoryAfterClear() {
 	history.cost, history.frameCapacity = historyHeaderRunes, 0
 	history.generation++
 	history.sequence++
-	history.current, history.save, history.detach = 0, 0, -1
+	history.current, history.save, history.detach = 0, 0, detach
 	history.retainedFrom, history.retainedTo = 0, 0
 	history.bytes = len(editor.String())
 	history.bootstrapBytes = history.bytes

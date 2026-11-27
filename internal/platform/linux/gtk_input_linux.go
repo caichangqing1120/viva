@@ -430,6 +430,9 @@ func (w *gtkWindow) setKeyboard(focused bool) {
 		if w.config.OnActivate != nil {
 			w.config.OnActivate()
 		}
+		if w.focused {
+			w.refreshReadOnlyTextInput()
+		}
 		platform.NotifyAppearanceChanged()
 		return
 	}
@@ -446,6 +449,19 @@ func (w *gtkWindow) setKeyboard(focused bool) {
 
 // stateChanged follows the window being minimized and maximized.
 func (w *gtkWindow) stateChanged(e *gdkEventWindowState) {
+	const compositorSized = gdkWindowStateMaximized | gdkWindowStateFullscreen
+	if w.app.wayland && e.Changed&compositorSized != 0 &&
+		(w.config.MinWidth > 0 || w.config.MinHeight > 0) {
+		managed := e.New&compositorSized != 0
+		wasManaged := (e.New^e.Changed)&compositorSized != 0
+		if managed && !wasManaged {
+			// GTK can enforce the normal minimum on a later configure and commit
+			// geometry larger than the compositor's maximized or fullscreen size.
+			w.g.windowSetGeometry(w.toplevel, 0, &gdkGeometry{}, 0)
+		} else if !managed && wasManaged {
+			w.setMinimumSize()
+		}
+	}
 	if e.Changed&gdkWindowStateFullscreen != 0 {
 		fullscreen := e.New&gdkWindowStateFullscreen != 0
 		if w.observeFullscreen(fullscreen) {
@@ -505,6 +521,15 @@ func (w *gtkWindow) wantsKeyReleases() bool {
 	return t != nil && t.enabled && t.input.Terminal && t.input.KeyReleases
 }
 
+// Publish the input owner before GTK routes a key through a stale read-only frame.
+func (w *gtkWindow) refreshReadOnlyTextInput() {
+	if !w.closed && !w.destroying && !w.nativeKeys &&
+		w.config.DynamicTextInput && w.text != nil && !w.text.enabled &&
+		w.config.OnRedraw != nil && w.config.ReadOnlyTextFocused != nil && w.config.ReadOnlyTextFocused() {
+		w.redraw()
+	}
+}
+
 // keyEvent routes one key press or release of the toplevel. It reports 1 when Viva took the key.
 func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 	if w.nativeKeys {
@@ -514,11 +539,28 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 		return 0
 	}
 	e := (*gdkEventKey)(unsafePointer(event))
-	if e.Type == gdkKeyRelease {
-		w.keyRelease(e, event)
+	if e.Type == gdkKeyPress && !normalizedKeysym(e.Keyval).IsModifier() {
+		hadFocus := w.focused
+		w.refreshReadOnlyTextInput()
+		if w.closed || w.destroying || w.app.stopping || hadFocus && !w.focused {
+			return 1
+		}
+		if w.nativeKeys {
+			return 0
+		}
+	}
+	if w.ime != nil && w.ime.direct != nil && w.ime.direct.queueKey(e) {
 		return 1
 	}
-	if w.ime != nil && w.ime.filtering() && !w.ime.prepareKey() {
+	return w.routeKey(e, event, true)
+}
+
+func (w *gtkWindow) routeKey(e *gdkEventKey, event uintptr, useIME bool) uintptr {
+	if e.Type == gdkKeyRelease {
+		w.keyRelease(e, event, useIME)
+		return 1
+	}
+	if useIME && w.ime != nil && w.ime.filtering() && !w.ime.prepareKey() {
 		return 1
 	}
 	if w.keys.down == nil {
@@ -544,7 +586,7 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 			keyEvent.Typed = string(r)
 		}
 		if key.IsModifier() {
-			if w.ime != nil && w.ime.filtering() {
+			if useIME && w.ime != nil && w.ime.filtering() {
 				w.ime.filter(event)
 			}
 			keyEvent.Modifiers |= key.Modifier()
@@ -554,7 +596,7 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 	} else if key.IsModifier() {
 		// An input method reads a lone modifier by its press and its release (a bare Shift
 		// switches between Chinese and English); GTK hands both to the context.
-		if w.ime != nil && w.ime.filtering() {
+		if useIME && w.ime != nil && w.ime.filtering() {
 			w.ime.filter(event)
 		}
 		w.tapModifier(key, keyEvent.Modifiers|key.Modifier(), repeat, false, e.HardwareKeycode)
@@ -568,9 +610,10 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 		shortcutEvent.Key, shortcutEvent.Text = input.KeyUnknown, " "
 	}
 	composing := w.text != nil && w.text.state.Composing || w.ime != nil && w.ime.composing()
-	if w.config.OnShortcut != nil && platform.ShortcutCandidate(shortcutEvent) &&
-		shortcutEvent.Modifiers&(input.ModifierControl|input.ModifierMeta) != 0 &&
-		e.State&(1<<7) == 0 && !composing && !w.text.ownsChord(keyEvent) {
+	marked := w.text != nil && w.text.state.Composing && w.text.state.Composition.Start < w.text.state.Composition.End
+	candidate := w.config.OnShortcut != nil && e.State&(1<<7) == 0 && platform.ShortcutCandidate(shortcutEvent)
+	primary := shortcutEvent.Modifiers&(input.ModifierControl|input.ModifierMeta) != 0
+	if candidate && primary && !composing && !w.text.ownsChord(keyEvent) {
 		frame, handled, err := w.config.OnShortcut(shortcutEvent)
 		w.present(frame, err)
 		if handled {
@@ -579,10 +622,10 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 	}
 	// The input method gets the key first; one it takes comes back as a commit or a preedit change,
 	// and one it hands back arrives again as an ordinary key event.
-	plainShortcut := w.config.OnShortcut != nil && platform.ShortcutCandidate(shortcutEvent) &&
-		shortcutEvent.Modifiers&(input.ModifierControl|input.ModifierMeta) == 0 &&
-		e.State&(1<<7) == 0 && !composing && !w.text.ownsChord(keyEvent)
-	if w.ime != nil && w.ime.filtering() {
+	plainShortcut := candidate && !primary && !composing && !w.text.ownsChord(keyEvent)
+	var context uintptr
+	if useIME && w.ime != nil && w.ime.filtering() {
+		context = w.ime.ctx
 		if plainShortcut {
 			direct, _ := keysymRune(e.Keyval)
 			if w.ime.filterShortcut(event, shortcutEvent, string(direct)) {
@@ -592,7 +635,13 @@ func (w *gtkWindow) keyEvent(event uintptr) uintptr {
 			return 1
 		}
 	}
-	if plainShortcut {
+	if w.closed || context != 0 && (w.ime == nil || w.ime.ctx != context) {
+		return 1
+	}
+	// During preedit, an application chord is offered only after GTK declines it.
+	// A forwarded key still belongs to the field if it is an editing chord.
+	if plainShortcut || candidate && primary && marked &&
+		!w.text.ownsChord(keyEvent) && !w.text.ownsEditingChord(keyEvent) {
 		frame, handled, err := w.config.OnShortcut(shortcutEvent)
 		w.present(frame, err)
 		if handled {
@@ -614,7 +663,7 @@ func (w *gtkWindow) tapModifier(key input.Key, modifiers input.Modifiers, repeat
 	w.present(frame, err)
 }
 
-func (w *gtkWindow) keyRelease(e *gdkEventKey, event uintptr) {
+func (w *gtkWindow) keyRelease(e *gdkEventKey, event uintptr, useIME bool) {
 	pressed := w.keys.down[e.HardwareKeycode]
 	delete(w.keys.down, e.HardwareKeycode)
 	if !pressed {
@@ -627,7 +676,7 @@ func (w *gtkWindow) keyRelease(e *gdkEventKey, event uintptr) {
 	if key := normalizedKeysym(e.Keyval); key.IsModifier() && !w.wantsKeyReleases() {
 		w.tapModifier(key, gdkModifiers(e.State)&^key.Modifier(), false, true, e.HardwareKeycode)
 	}
-	if w.ime != nil && w.ime.filtering() && w.ime.filter(event) {
+	if useIME && w.ime != nil && w.ime.filtering() && w.ime.filter(event) {
 		return
 	}
 	if !w.wantsKeyReleases() || w.config.OnKey == nil {

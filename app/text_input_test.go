@@ -45,6 +45,7 @@ func TestTextEventAppliesCancelComposition(t *testing.T) {
 	TextEvent{Kind: TextSetMarked, Text: "pin", MarkedSelection: TextRange{Start: 3, End: 3}}.Apply(editor)
 	TextEvent{Kind: TextCancelComposition}.Apply(editor)
 	want := TextState{
+		InputOwner:        platform.EditorInputOwner(editor),
 		Value:             "A👩‍💻B",
 		Selection:         TextRange{Start: 1, End: 4},
 		SelectionReversed: true,
@@ -118,7 +119,7 @@ func TestTextCommandsMoveAndEditByGrapheme(t *testing.T) {
 			editor := text.NewEditor("A👩‍💻中B")
 			editor.SetSelection(testCase.selection)
 			TextEvent{Kind: TextCommandEvent, Command: testCase.command}.Apply(editor)
-			want := TextState{Value: testCase.wantValue, Selection: testCase.wantSelection}
+			want := TextState{InputOwner: platform.EditorInputOwner(editor), Value: testCase.wantValue, Selection: testCase.wantSelection}
 			want.SelectionReversed = testCase.command == TextMoveLeftAndModifySelection
 			if got := TextStateOf(editor); got != want {
 				t.Fatalf("text state = %+v, want %+v", got, want)
@@ -161,7 +162,7 @@ func TestSelectionExtensionPreservesAnchor(t *testing.T) {
 		{TextMoveRightAndModifySelection, TextRange{Start: 6, End: 6}, false},
 	} {
 		TextEvent{Kind: TextCommandEvent, Command: step.command}.Apply(editor)
-		want := TextState{Value: "A👩‍💻中B", Selection: step.selection, SelectionReversed: step.reversed}
+		want := TextState{InputOwner: platform.EditorInputOwner(editor), Value: "A👩‍💻中B", Selection: step.selection, SelectionReversed: step.reversed}
 		if got := TextStateOf(editor); got != want {
 			t.Fatalf("step %d text state = %+v, want %+v", index, got, want)
 		}
@@ -173,7 +174,8 @@ func TestTextStateOfPreservesRuneIndexedComposition(t *testing.T) {
 	editor.SetSelection(text.Range{Start: 2, End: 2})
 	editor.SetMarkedText("中文", text.Range{Start: 1, End: 2})
 	want := TextState{
-		Value: "A😀中文Z", Selection: TextRange{Start: 3, End: 4},
+		InputOwner: platform.EditorInputOwner(editor),
+		Value:      "A😀中文Z", Selection: TextRange{Start: 3, End: 4},
 		Composition: TextRange{Start: 2, End: 4}, Composing: true,
 	}
 	if got := TextStateOf(editor); got != want {

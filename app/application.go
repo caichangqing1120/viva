@@ -323,6 +323,11 @@ func (application *Application) OpenWindow(config Config, canvas *gfx.Canvas) (*
 	}); ok {
 		window.applyResult, window.requestRedraw, window.runShortcut = applier.applyResult, applier.requestRedraw, applier.runShortcut
 	}
+	// Once the painter callbacks are saved, keep the native control itself so
+	// optional window methods remain discoverable through type assertions.
+	if wrapper, ok := control.(windowControlUnwrapper); ok {
+		window.control = wrapper.unwrapWindowControl()
+	}
 	application.mu.Lock()
 	application.openedAny = true
 	application.mu.Unlock()

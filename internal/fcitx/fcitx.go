@@ -143,6 +143,8 @@ func Dial() (*Bus, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Subscribe before checking presence so discovery cannot miss a daemon exit.
+	bus := newBus(conn)
 	var body dbus.Encoder
 	body.String(service)
 	reply, err := conn.Call(dbusIface, dbusPath, dbusIface, "NameHasOwner", "s", body.Bytes())
@@ -156,7 +158,7 @@ func Dial() (*Bus, error) {
 		conn.Close()
 		return nil, errors.New("fcitx: no daemon on the session bus")
 	}
-	return newBus(conn), nil
+	return bus, nil
 }
 
 func newBus(conn transport) *Bus {
@@ -166,6 +168,9 @@ func newBus(conn transport) *Bus {
 	var rule dbus.Encoder
 	rule.String("type='signal',interface='" + icIface + "'")
 	_, _ = conn.Call(dbusIface, dbusPath, dbusIface, "AddMatch", "s", rule.Bytes())
+	var ownerRule dbus.Encoder
+	ownerRule.String("type='signal',sender='" + dbusIface + "',interface='" + dbusIface + "',member='NameOwnerChanged',arg0='" + service + "'")
+	_, _ = conn.Call(dbusIface, dbusPath, dbusIface, "AddMatch", "s", ownerRule.Bytes())
 	return bus
 }
 
@@ -260,6 +265,10 @@ func (bus *Bus) Dispatch() error {
 		for _, message := range messages {
 			switch message.Type {
 			case dbus.TypeSignal:
+				if serviceOwnerChanged(message) {
+					bus.fail(errors.New("fcitx: the daemon left the session bus"))
+					return bus.err
+				}
 				if context := bus.contexts[message.Path]; context != nil && message.Interface == icIface {
 					context.signal(message)
 				}
@@ -276,6 +285,16 @@ func (bus *Bus) Dispatch() error {
 			return nil
 		}
 	}
+}
+
+func serviceOwnerChanged(message *dbus.Message) bool {
+	if message.Sender != dbusIface || message.Path != dbusPath || message.Interface != dbusIface ||
+		message.Member != "NameOwnerChanged" || message.Signature != "sss" {
+		return false
+	}
+	args := message.Args()
+	name, before, after := args.String(), args.String(), args.String()
+	return args.Err() == nil && args.Done() && name == service && before != "" && before != after
 }
 
 // answer records the engine's verdict on a key and releases the verdicts that

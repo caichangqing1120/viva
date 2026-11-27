@@ -50,3 +50,47 @@ func TestClipboardSourceRejectsAnUnknownFormatOrInvalidLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestClipboardSourceAndFilePromisesReplaceEachOther(t *testing.T) {
+	for _, mode := range []string{"application", "driver"} {
+		t.Run(mode, func(t *testing.T) {
+			driver := newPromiseDriver(t)
+			files := promiseTree(t)
+			const rtf = `{\rtf1\ansi handoff}`
+			driver.SetClipboardRTF(rtf, "rich text")
+			released := 0
+			if mode == "application" {
+				if err := SetClipboardFilePromises(files, func() { released++ }); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				driver.SetClipboardFilePromises(files)
+			}
+			if got, err := ClipboardSource(ClipboardRTFSource, len(rtf)); got != nil || !errors.Is(err, ErrNoClipboardSource) {
+				t.Errorf("file promises left RTF source %q, %v", got, err)
+			}
+			if got := driver.ClipboardFilePromises(); len(got) != len(files) || released != 0 {
+				t.Fatalf("installed %d promises and released %d before replacement", len(got), released)
+			}
+			const html = "<b>replacement</b>"
+			driver.SetClipboardHTML(html, "replacement")
+			if got, err := ClipboardSource(ClipboardHTMLSource, len(html)); string(got) != html || err != nil {
+				t.Fatalf("HTML replacing file promises = %q, %v", got, err)
+			}
+			if len(driver.ClipboardFilePromises()) != 0 {
+				t.Fatal("HTML replacement left file promises")
+			}
+			wantReleased := 0
+			if mode == "application" {
+				wantReleased = 1
+			}
+			if released != wantReleased {
+				t.Fatalf("released %d times, want %d", released, wantReleased)
+			}
+			driver.SetClipboardRTF(rtf, "again")
+			if released != wantReleased {
+				t.Fatalf("released %d times after another write, want %d", released, wantReleased)
+			}
+		})
+	}
+}

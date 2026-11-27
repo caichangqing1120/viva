@@ -23,6 +23,10 @@ func nativeClipboardSource(format ClipboardSourceFormat, limit int) ([]byte, err
 
 func nativeSetClipboardFiles(paths []string) error { return windowsplatform.SetClipboardFiles(paths) }
 
+func nativeSetClipboardFilePromises(files []FilePromise, released func()) error {
+	return windowsplatform.SetClipboardFilePromises(files, released)
+}
+
 func nativeStartFileDrag(paths []string, allowed FileDragEffect) error {
 	return windowsplatform.StartFileDrag(paths, allowed)
 }

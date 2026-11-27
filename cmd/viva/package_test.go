@@ -15,6 +15,14 @@ import (
 	"testing"
 )
 
+func requireDiskImages(t *testing.T) {
+	t.Helper()
+	requireMac(t)
+	if os.Getenv("VIVA_DISK_IMAGE_TESTS") != "1" {
+		t.Skip("makes real disk images with hdiutil; set VIVA_DISK_IMAGE_TESTS=1 to run")
+	}
+}
+
 func requireMac(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "darwin" {

@@ -3,7 +3,10 @@
 package darwin
 
 import (
+	"errors"
 	"testing"
+
+	"github.com/vivaui/viva/internal/platform"
 )
 
 // TestPasteboardHTMLOffersBothFlavours writes the pair on a private pasteboard
@@ -34,5 +37,28 @@ func TestPasteboardHTMLOffersBothFlavours(t *testing.T) {
 	}
 	if got, err := privatePasteboardHTML(name); err != nil || got != "" {
 		t.Fatalf("after files replaced the pair: html = %q, %v", got, err)
+	}
+}
+
+func TestPasteboardSourcePreservesBytesAndDoesNotFallBack(t *testing.T) {
+	name := privateName(t)
+	const source = "<b>\u6587</b>\r\n"
+	if err := putPrivatePasteboardHTML(name, source, "plain fallback"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := putPrivatePasteboardHTML(name, "", ""); err != nil {
+			t.Error(err)
+		}
+	})
+	got, err := privatePasteboardSource(name, platform.ClipboardHTMLSource, len(source))
+	if string(got) != source || err != nil {
+		t.Fatalf("HTML bytes = %q, %v", got, err)
+	}
+	if _, err := privatePasteboardSource(name, platform.ClipboardHTMLSource, len(source)-1); !errors.Is(err, platform.ErrClipboardSourceTooLarge) {
+		t.Fatalf("oversize HTML = %v", err)
+	}
+	if _, err := privatePasteboardSource(name, platform.ClipboardRTFSource, len(source)); !errors.Is(err, platform.ErrNoClipboardSource) {
+		t.Fatalf("RTF with HTML and plain text on the pasteboard = %v", err)
 	}
 }

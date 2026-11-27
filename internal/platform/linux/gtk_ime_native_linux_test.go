@@ -324,9 +324,68 @@ func (p *gtkIMEProbe) run() {
 	for _, disabled := range []bool{false, true} {
 		p.frameHandoff(disabled)
 	}
+	for _, scenario := range []string{"same editor", "replacement editor", "unknown owner", "active preedit"} {
+		p.inputSuspension(scenario)
+	}
 	for _, geometry := range []bool{false, true} {
 		p.shortcutHandoff(geometry)
 	}
+}
+
+func (p *gtkIMEProbe) inputSuspension(scenario string) {
+	editor := text.NewEditor("same text")
+	p.install(editor, gfx.Item(1))
+	field := p.w.text.input
+	if scenario == "unknown owner" {
+		field.State = platform.TextState{Value: "same text", Selection: text.Range{Start: 9, End: 9}}
+		p.w.present(platform.Frame{TextInput: platform.TextInputUpdate{Changed: true, Input: &field}}, nil)
+	}
+	if scenario == "active preedit" {
+		if err := p.compose(); err != nil {
+			p.record(scenario, err.Error())
+			return
+		}
+	}
+	context := p.keys.ref(p.w.ime.ctx)
+	defer p.w.g.objectUnref(context)
+	signal, value := cString("commit"), cString("z")
+	p.w.present(platform.Frame{TextInput: platform.TextInputUpdate{Changed: true}}, nil)
+	before := editor.String()
+	p.events = nil
+	p.keys.emit(context, &signal[0], &value[0])
+	var failures []string
+	if editor.String() != before || len(p.events) != 0 {
+		failures = append(failures, "a suspended context delivered a commit")
+	}
+	if scenario == "replacement editor" {
+		editor = text.NewEditor("same text")
+		p.install(editor, gfx.Item(1))
+	} else {
+		if scenario == "active preedit" {
+			// The application has discarded its provisional edit while the field was hidden.
+			editor.CancelComposition()
+			field.State = platform.EditorState(editor)
+		}
+		p.w.present(platform.Frame{TextInput: platform.TextInputUpdate{Changed: true, Input: &field}}, nil)
+		p.observe()
+	}
+	wantReuse := scenario == "same editor"
+	if reused := p.w.ime.ctx == context; reused != wantReuse {
+		failures = append(failures, fmt.Sprintf("context reused=%t, want %t", reused, wantReuse))
+	}
+	if !wantReuse {
+		p.keys.emit(context, &signal[0], &value[0])
+		if editor.String() != "same text" || len(p.events) != 0 {
+			failures = append(failures, fmt.Sprintf("retired context delivered into the restored field: text=%q events=%d", editor.String(), len(p.events)))
+		}
+	}
+	if err := p.press(p.w.ime.ctx, 'r', 0); err != nil {
+		failures = append(failures, err.Error())
+	}
+	if editor.String() != "same textr" {
+		failures = append(failures, fmt.Sprintf("first key after suspension: text=%q", editor.String()))
+	}
+	p.record(scenario, failures...)
 }
 
 func (p *gtkIMEProbe) frameHandoff(disabled bool) {
@@ -476,8 +535,8 @@ func TestGTKNativeComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.trials) != 14 {
-		t.Fatalf("native trials=%d, want 14", len(p.trials))
+	if len(p.trials) != 18 {
+		t.Fatalf("native trials=%d, want 18", len(p.trials))
 	}
 	for _, trial := range p.trials {
 		t.Logf("%s signals=%q text=%q events=%q", trial.name, trial.signals, trial.value, trial.events)

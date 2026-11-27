@@ -18,13 +18,16 @@ import (
 // and commits the choice as it does on the other platforms. The input method owns the candidate
 // window; this side says when the field has the keyboard and where its caret is.
 type gtkIME struct {
-	w            *gtkWindow
-	g            *gtkLibrary
-	ctx          uintptr
-	clientWindow uintptr
-	target       gfx.ID
-	owner        text.CompositionIdentity
-	tentative    bool
+	w             *gtkWindow
+	g             *gtkLibrary
+	ctx           uintptr
+	clientWindow  uintptr
+	target        gfx.ID
+	editor        platform.TextInputOwner
+	owner         text.CompositionIdentity
+	tentative     bool
+	direct        *gtkDirectFcitx
+	directFailure gtkDirectFcitxFailure
 	// focused is whether the window has the keyboard; active is whether the context was told the
 	// field does.
 	focused bool
@@ -54,7 +57,8 @@ type gtkIME struct {
 
 func newGTKIME(w *gtkWindow) *gtkIME {
 	ime := &gtkIME{w: w, g: w.g, target: w.text.input.Target,
-		owner: w.text.state.CompositionIdentity, tentative: w.text.state.TentativeComposition}
+		editor: w.text.state.InputOwner,
+		owner:  w.text.state.CompositionIdentity, tentative: w.text.state.TentativeComposition}
 	ime.open()
 	return ime
 }
@@ -72,7 +76,8 @@ func (ime *gtkIME) open() {
 }
 
 func (ime *gtkIME) sameOwner(input *platform.TextInput) bool {
-	return input.Target == ime.target && input.State.CompositionIdentity == ime.owner && input.State.TentativeComposition == ime.tentative
+	return input.Target == ime.target && input.State.InputOwner == ime.editor &&
+		input.State.CompositionIdentity == ime.owner && input.State.TentativeComposition == ime.tentative
 }
 
 // realized gives the context its window, which exists once the toplevel is realized.
@@ -201,13 +206,25 @@ func (ime *gtkIME) sync() {
 	if ime.ctx == 0 || ime.w.closed {
 		return
 	}
+	if ime.direct != nil {
+		ime.direct.sync()
+		return
+	}
 	text := ime.w.text
-	if !ime.sameOwner(&text.input) {
+	// A temporary loss of the field (for example while a file dialog is open)
+	// need not discard the idle context and its per-editor input method state.
+	// A live preedit or an unknown editor must retire the context instead.
+	suspend := !text.enabled && ime.editor != (platform.TextInputOwner{}) && !ime.composing()
+	// The editor discarded its marked text independently of GTK. Retire the
+	// context before GTK can commit it during reset, focus-out, or an async reply.
+	discard := text.enabled && ime.active && ime.engineComposing && !text.state.Composing
+	if discard || (!suspend && !ime.sameOwner(&text.input)) {
 		ime.close()
 		if ime.w.closed {
 			return
 		}
 		ime.target = text.input.Target
+		ime.editor = text.state.InputOwner
 		ime.owner, ime.tentative = text.state.CompositionIdentity, text.state.TentativeComposition
 		ime.open()
 	}
@@ -215,12 +232,19 @@ func (ime *gtkIME) sync() {
 	want := ime.focused && text.enabled && !ime.w.nativeKeys
 	switch {
 	case want && !ime.active:
+		if ime.startDirect() {
+			ime.direct.sync()
+			return
+		}
 		ime.realized()
 		if ime.ctx != context || ime.w.closed {
 			return
 		}
 		ime.active, ime.haveCursor, ime.hasSources, ime.sent = true, false, false, false
 		ime.callContext(context, ime.g.imFocusIn)
+		if ime.current(context) {
+			ime.w.app.watchFcitx(ime)
+		}
 	case !want && ime.active:
 		ime.active = false
 		if !ime.focused && ime.composing() {
@@ -239,33 +263,8 @@ func (ime *gtkIME) sync() {
 	if !ime.active || ime.ctx != context || ime.w.closed {
 		return
 	}
-	// The field stopped composing without the context (a click moved the caret, the application
-	// replaced the text): it must forget its composition or its next key continues one the user no
-	// longer sees.
-	if ime.engineComposing && !text.state.Composing {
-		ime.engineComposing = false
-		ime.callContext(context, ime.g.imReset)
-		if ime.ctx != context || ime.w.closed {
-			return
-		}
-	}
 	ime.updateCursor()
 	ime.updateSurrounding()
-}
-
-func (ime *gtkIME) discardOnFocusOut(context uintptr) {
-	func() {
-		ime.discarding = true
-		defer func() { ime.discarding = false }()
-		ime.callContext(context, ime.g.imReset)
-		if ime.ctx == context && !ime.w.closed && !ime.active {
-			ime.callContext(context, ime.g.imFocusOut)
-		}
-	}()
-	if ime.current(context) && !ime.active {
-		ime.ending = true
-		ime.finishPreedit(context)
-	}
 }
 
 // updateCursor tells the input method where the caret is in its client window.
@@ -344,6 +343,21 @@ func (ime *gtkIME) deleteSurrounding(offset, count int) uintptr {
 	return 1
 }
 
+func (ime *gtkIME) discardOnFocusOut(context uintptr) {
+	func() {
+		ime.discarding = true
+		defer func() { ime.discarding = false }()
+		ime.callContext(context, ime.g.imReset)
+		if ime.ctx == context && !ime.w.closed && !ime.active {
+			ime.callContext(context, ime.g.imFocusOut)
+		}
+	}()
+	if ime.current(context) && !ime.active {
+		ime.ending = true
+		ime.finishPreedit(context)
+	}
+}
+
 func (ime *gtkIME) commit(value string) {
 	if ime.discarding {
 		return
@@ -384,6 +398,7 @@ func (ime *gtkIME) preeditStarted() {
 	ime.finishPreedit(context)
 	if ime.current(context) {
 		ime.session, ime.engineComposing = true, true
+		ime.w.app.watchFcitx(ime)
 	}
 }
 

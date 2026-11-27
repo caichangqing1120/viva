@@ -14,12 +14,15 @@ import (
 // stubDaemon stands in for a framework's connection in a selection test.
 type stubDaemon struct{ name string }
 
-func (stubDaemon) FD() int                                    { return -1 }
-func (stubDaemon) Dispatch() error                            { return nil }
-func (stubDaemon) Err() error                                 { return nil }
-func (stubDaemon) Deadline() (time.Time, bool)                { return time.Time{}, false }
-func (stubDaemon) Expire()                                    {}
-func (stubDaemon) open(*linuxIME) (inputMethodContext, error) { return nil, nil }
+func (stubDaemon) FD() int                     { return -1 }
+func (stubDaemon) Dispatch() error             { return nil }
+func (stubDaemon) Err() error                  { return nil }
+func (stubDaemon) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (stubDaemon) Expire()                     {}
+func (stubDaemon) Close()                      {}
+func (stubDaemon) open(*linuxIME, func() bool) (inputMethodContext, error) {
+	return nil, nil
+}
 
 func TestInputMethodFrameworkFollowsXModifiers(t *testing.T) {
 	for value, want := range map[string]string{
@@ -97,7 +100,8 @@ func TestFcitxPreeditClearKeepsSelectionAndHistory(test *testing.T) {
 				harness.editor.SetSelection(selection.rangeValue)
 				harness.input.state = platform.EditorState(harness.editor)
 				harness.focus(test)
-				handler := harness.ime.fcitxHandler()
+				epoch := harness.ime.epoch
+				handler := harness.ime.fcitxHandler(func() bool { return harness.ime.contextCurrent(epoch) })
 				assertSelection := func() {
 					test.Helper()
 					if harness.editor.Selection() != (text.Range{Start: 1, End: 2}) || harness.editor.Caret() != selection.rangeValue.End {

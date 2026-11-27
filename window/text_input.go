@@ -30,6 +30,8 @@ type TextState struct {
 	Redraw bool
 	// Numeric ownership keeps editor/history references out of value snapshots.
 	CompositionIdentity text.CompositionIdentity
+	// InputOwner lets GTK recognize the same editor across changes in focus.
+	InputOwner platform.TextInputOwner
 }
 
 // TextEventKind identifies one native text-system mutation.

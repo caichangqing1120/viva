@@ -345,15 +345,10 @@ func requestHandle(uniqueName, token string) string {
 
 var requestCounter atomic.Uint32
 
-// portalChoose shows the portal's file chooser and waits for the user. canceled is true
+// requestPortalFile shows the portal's file chooser and waits for the user. canceled is true
 // when the user dismissed it. An error wrapping errServiceMissing means no dialog was
 // shown and the caller may use another way.
-func portalChoose(request portalFileRequest) (paths []string, canceled bool, err error) {
-	paths, _, canceled, err = portalChooseWithChoices(request)
-	return paths, canceled, err
-}
-
-func portalChooseWithChoices(request portalFileRequest) (paths []string, choices map[string]string, canceled bool, err error) {
+func requestPortalFile(request portalFileRequest) (paths []string, choices map[string]string, canceled bool, err error) {
 	conn, err := dbus.DialSession()
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("%w: %v", errServiceMissing, err)

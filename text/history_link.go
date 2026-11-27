@@ -55,7 +55,7 @@ func replayHistoryOwned(history *historyJournal, index int, inverse bool) {
 
 func clearHistoryOwned(history *historyJournal, manual bool) {
 	if manual {
-		history.owner.resetHistoryAfterClear()
+		history.owner.resetHistoryAfterClear(history.detach)
 	} else {
 		invalidateHistoryFromOwned(history, 0)
 	}

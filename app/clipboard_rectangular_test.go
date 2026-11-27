@@ -16,6 +16,9 @@ func assertClipboardTextFormat(t *testing.T, want string, rectangular bool) {
 	if err != nil || value != want || column != rectangular {
 		t.Fatalf("clipboard snapshot = %q, rectangular=%v, err=%v; want %q, rectangular=%v", value, column, err, want, rectangular)
 	}
+	if got := ClipboardRectangular(); got != rectangular {
+		t.Fatalf("clipboard rectangular marker = %v; want %v", got, rectangular)
+	}
 }
 
 func TestDriverRectangularClipboardCopyCutAndPaste(t *testing.T) {

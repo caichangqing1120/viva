@@ -122,7 +122,7 @@ jobs:
           xvfb-run -a env HOME="$profile/home" XDG_CONFIG_HOME="$profile/config" XDG_CACHE_HOME="$profile/cache" XDG_DATA_HOME="$profile/data" XDG_RUNTIME_DIR="$profile/runtime" VIVA_ATSPI_NATIVE_ROOT="$profile" VIVA_ATSPI_NATIVE=1 NO_AT_BRIDGE=1 dbus-run-session -- "$binary" -test.run='^TestAtspiNative(FirstWindowPolling|ResizePublishesFrames)$' -test.count=1 -test.v -test.timeout=45s
       - name: GTK native composition lifecycle
         if: runner.os == 'Linux'
-        run: dbus-run-session -- xvfb-run -a env VIVA_GTK_IME_NATIVE=1 GTK_IM_MODULE=gtk-im-context-simple GDK_BACKEND=x11 NO_AT_BRIDGE=1 G_DEBUG=fatal-criticals go test -tags vivagtk ./internal/platform/linux -run '^(TestGTKNativeComposition|TestGTKNativeTentative.*|TestGTKNativeSameTargetOwnership)$' -count=1 -v -timeout=90s
+        run: dbus-run-session -- xvfb-run -a env VIVA_GTK_IME_NATIVE=1 GTK_IM_MODULE=gtk-im-context-simple GDK_BACKEND=x11 NO_AT_BRIDGE=1 G_DEBUG=fatal-criticals go test -tags vivagtk ./internal/platform/linux -run '^(TestGTKNativeComposition|TestGTKNativeTentative.*|TestGTKNativeSameTargetOwnership|TestGTKNativeRefreshReadOnlyTextInput)$' -count=1 -v -timeout=90s
       - name: GTK ordinary key dispatch cost
         if: runner.os == 'Linux'
         run: dbus-run-session -- xvfb-run -a env VIVA_GTK_IME_NATIVE=1 GTK_IM_MODULE=gtk-im-context-simple GDK_BACKEND=x11 NO_AT_BRIDGE=1 G_DEBUG=fatal-criticals go test -tags vivagtk ./internal/platform/linux -run '^$' -bench '^BenchmarkGTKNativeOrdinaryKey$' -benchmem -benchtime=200ms -count=3 -timeout=90s
@@ -158,7 +158,7 @@ jobs:
         run: |
           for backend in x11 wayland; do
             for engine in pinyin hangul; do
-              xvfb-run -a env VIVA_FCITX_ENGINE="$engine" VIVA_FCITX_REFERENCE=1 VIVA_FCITX_GTK_REFERENCE=1 VIVA_GTK_IME_NATIVE=1 G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN='^Test(NativeIBus(Frontend|OwnerReactivation|FactoryDeclinedShortcut|UnsupportedModeRetirement)|GTKNativeFcitx(Composition|WindowClose))$' sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
+              xvfb-run -a env VIVA_FCITX_ENGINE="$engine" VIVA_FCITX_REFERENCE=1 VIVA_FCITX_GTK_REFERENCE=1 VIVA_GTK_IME_NATIVE=1 G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN='^Test(NativeIBus(Frontend|OwnerReactivation|FactoryDeclinedShortcut|UnsupportedModeRetirement)|GTKNativeFcitx(Composition|DeclinedShortcut|WindowClose))$' sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
             done
           done
       - name: GTK real seat keyboard and Fcitx composition
@@ -167,9 +167,16 @@ jobs:
           for backend in x11 wayland; do
             tests='^TestGTKNative(SeatKeyboardAfterContentClick|InputMethodWindowTeardown)$'
             if [ "$backend" = wayland ]; then
-              tests='^Test(GTKNative(SeatKeyboardAfterContentClick|InputMethodWindowTeardown|WaylandSeatHideShow|WaylandPointerKeepsFcitxPreedit|WaylandWidgetExternalFocus|WaylandAttachFailure|WaylandInputRegions)|GTKWaylandWindowAttrLP64Layout)$'
+              tests='^Test(GTKNative(SeatKeyboardAfterContentClick|InputMethodWindowTeardown|WaylandSeatHideShow|WaylandPointerKeepsFcitxPreedit|WaylandWidgetExternalFocus|WaylandAttachFailure|WaylandInputRegions|SaveDialogClosesWithParent|SaveDialogResumesEditingAfterPreedit|SaveDialogSuspendsPreeditForPortal)|GTKWaylandWindowAttrLP64Layout)$'
             fi
-            xvfb-run -a -s '-screen 0 800x600x24' env VIVA_GTK_SEAT_NATIVE=1 VIVA_GTK_SEAT_REMAP=1 VIVA_GTK_NATIVE_WIDGET_FOCUS=1 VIVA_GTK_ATTACH_NATIVE=1 VIVA_GTK_REGION_NATIVE=1 VIVA_GTK_CLOSE_NATIVE=1 VIVA_GTK_IME_NATIVE=1 VIVA_FCITX_ENGINE=pinyin G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN="$tests" sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
+            # These probes inspect GtkIMContext. The next step tests direct Fcitx separately.
+            xvfb-run -a -s '-screen 0 800x600x24' env VIVA_GTK_SEAT_NATIVE=1 VIVA_GTK_SEAT_REMAP=1 VIVA_GTK_NATIVE_WIDGET_FOCUS=1 VIVA_GTK_ATTACH_NATIVE=1 VIVA_GTK_REGION_NATIVE=1 VIVA_GTK_CLOSE_NATIVE=1 VIVA_GTK_SAVE_DIALOG_NATIVE=1 VIVA_GTK_IME_NATIVE=1 VIVA_GTK_FCITX_DIRECT=0 VIVA_FCITX_ENGINE=pinyin G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN="$tests" sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
+          done
+      - name: Fcitx hotkey in GTK single-line fields
+        if: runner.os == 'Linux'
+        run: |
+          for backend in x11 wayland; do
+            xvfb-run -a -s '-screen 0 800x600x24' env VIVA_GTK_FCITX_HANDOFF=1 VIVA_GTK_IME_NATIVE=1 VIVA_FCITX_ENGINE=pinyin G_DEBUG=fatal-criticals VIVA_FCITX_TEST_BINARY="$RUNNER_TEMP/viva-ibus-frontend.test" VIVA_IBUS_TEST_RUN='^TestGTKNativeDirectFcitxHotkeyOn(FirstField|FieldHandoff)$' sh internal/ibus/testdata/native-fcitx-service.sh "$backend"
           done
       - name: Linux text callback ordering
         if: runner.os == 'Linux'

@@ -39,6 +39,19 @@ func SetClipboardRectangularText(value string) error {
 	return setClipboardText(value, true)
 }
 
+// ClipboardRectangular checks the legacy MSDEV marker without requiring a
+// Unicode text format. The richer text snapshot also recognizes Borland blocks.
+func ClipboardRectangular() bool {
+	clipboardMu.Lock()
+	defer clipboardMu.Unlock()
+	column, _, err := rectangularClipboardFormats()
+	if err != nil {
+		return false
+	}
+	available, _, _ := clipboardFormatAvailable.Call(column)
+	return available != 0
+}
+
 // ClipboardTextWithFormat reads text and its markers while the clipboard is open.
 func ClipboardTextWithFormat() (string, bool, error) {
 	lockClipboardThread()

@@ -568,3 +568,72 @@ func TestHistoryFramesClearResetsDetachedBoundary(t *testing.T) {
 		t.Fatalf("post-clear detach = %d, want -1", got)
 	}
 }
+
+func TestHistoryFramesClearHistoryRetainsDetachedBoundary(t *testing.T) {
+	editor := NewEditor("abc")
+	editor.SetSavePoint()
+	old := mustTrackHistory(t, editor)
+	editor.Insert("x")
+	editor.SetSavePoint()
+	if !editor.Undo() {
+		t.Fatal("cannot undo the saved change")
+	}
+	editor.MoveTo(0, false)
+	editor.Insert("z")
+	frames, _, ok := editor.HistorySince(old)
+	if !ok || len(frames) != 4 || frames[3].Steps[0].Context.Detach != 0 {
+		t.Fatalf("pre-clear branch did not detach at zero: %+v, ok=%t", frames, ok)
+	}
+
+	editor.ClearHistory()
+	if got, _, ok := editor.HistorySince(old); ok || got != nil {
+		t.Fatal("ClearHistory kept a cursor from the previous generation")
+	}
+	from := mustTrackHistory(t, editor)
+	editor.MoveTo(0, false)
+	editor.Insert("q")
+	expectHistoryFrames(t, editor, from, []HistoryStep{
+		{HistoryForward, HistoryInsert, 0, 1, 4, 5, historySample(1, 0, 0, 1)},
+	})
+}
+
+func TestHistoryFramesClearHistoryMovesRetainedDetachOnAppend(t *testing.T) {
+	editor := NewEditor("abc")
+	editor.SetSavePoint()
+	from := mustTrackHistory(t, editor)
+	for _, value := range []string{"x", "y", "z"} {
+		editor.MoveTo(0, false)
+		editor.Insert(value)
+		editor.BreakUndoGroup()
+	}
+	editor.SetSavePoint()
+	if !editor.Undo() {
+		t.Fatal("cannot undo the saved change")
+	}
+	editor.MoveTo(0, false)
+	editor.Insert("q")
+	frames, _, ok := editor.HistorySince(from)
+	if !ok || len(frames) != 6 || frames[5].Steps[0].Context.Detach != 2 {
+		t.Fatalf("pre-clear branch did not detach at two: %+v, ok=%t", frames, ok)
+	}
+
+	editor.ClearHistory()
+	from = mustTrackHistory(t, editor)
+	editor.MoveTo(0, false)
+	editor.Insert("r")
+	from = expectHistoryFrames(t, editor, from, []HistoryStep{
+		{HistoryForward, HistoryInsert, 0, 1, 6, 7, historySample(1, 0, 0, 1)},
+	})
+	if !editor.Undo() {
+		t.Fatal("post-clear undo failed")
+	}
+	from = expectHistoryFrames(t, editor, from, []HistoryStep{
+		{HistoryUndo, HistoryDelete, 0, 1, 7, 6, historySample(1, 0, 0, 1)},
+	})
+	if !editor.Redo() {
+		t.Fatal("post-clear redo failed")
+	}
+	expectHistoryFrames(t, editor, from, []HistoryStep{
+		{HistoryRedo, HistoryInsert, 0, 1, 6, 7, historySample(0, 0, 0, 1)},
+	})
+}

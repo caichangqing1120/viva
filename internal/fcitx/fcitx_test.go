@@ -219,6 +219,36 @@ func TestReleaseKeyIsSentAsARelease(t *testing.T) {
 	}
 }
 
+func TestDaemonOwnerLossClosesContextsAndReleasesWaitingKeys(t *testing.T) {
+	fake := &fakeTransport{id: 7}
+	context := newTestContext(t, fake)
+	var answers []bool
+	if err := context.ProcessKey(Key{Keysym: 'x'}, func(handled bool) {
+		answers = append(answers, handled)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ownerChange := func(name, before, after string) *dbus.Message {
+		var body dbus.Encoder
+		body.String(name)
+		body.String(before)
+		body.String(after)
+		return &dbus.Message{Type: dbus.TypeSignal, Sender: dbusIface, Path: dbusPath,
+			Interface: dbusIface, Member: "NameOwnerChanged", Signature: "sss", Body: body.Bytes()}
+	}
+	fake.incoming = []*dbus.Message{ownerChange("org.example.Other", ":1.7", "")}
+	if err := context.bus.Dispatch(); err != nil || len(answers) != 0 {
+		t.Fatalf("unrelated service loss changed the context: err=%v answers=%v", err, answers)
+	}
+	fake.incoming = []*dbus.Message{ownerChange(service, ":1.2", "")}
+	if err := context.bus.Dispatch(); err == nil || !fake.closed || len(answers) != 1 || answers[0] {
+		t.Fatalf("daemon loss: err=%v closed=%v answers=%v", err, fake.closed, answers)
+	}
+	if err := context.FocusIn(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("old context can still send focus: %v", err)
+	}
+}
+
 func TestFormattedPreeditJoinsSegmentsAndCountsTheCaretInCharacters(t *testing.T) {
 	fake := &fakeTransport{id: 1}
 	path := "/inputcontext_1"

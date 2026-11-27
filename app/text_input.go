@@ -26,6 +26,7 @@ func TextStateOf(editor *text.Editor) TextState {
 		Composing:            composing,
 		TentativeComposition: editor.TentativeCompositionEnabled(),
 		CompositionIdentity:  editor.TentativeCompositionIdentity(),
+		InputOwner:           platform.EditorInputOwner(editor),
 	}
 }
 
@@ -43,6 +44,7 @@ func platformTextState(state TextState) platform.TextState {
 		TentativeComposition: state.TentativeComposition,
 		Redraw:               state.Redraw,
 		CompositionIdentity:  identity,
+		InputOwner:           state.InputOwner,
 	}
 }
 

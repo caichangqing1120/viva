@@ -39,8 +39,9 @@ type linuxIME struct {
 
 	// focused is whether the window has the keyboard; active is whether the
 	// engine has been told the field does.
-	focused bool
-	active  bool
+	focused   bool
+	active    bool
+	focusSpan uint64
 	// engineComposing is whether the engine believes a composition is under way.
 	engineComposing bool
 	// cursor is the last caret location sent, and haveCursor says it was sent.
@@ -119,14 +120,20 @@ func (application *linuxApplication) checkInputMethod() {
 	application.rebuildPoll()
 }
 
-// lost abandons the engine. Text it left marked is kept as typed.
+// lost abandons the engine without committing a tentative or Fcitx 4 preedit.
 func (ime *linuxIME) lost() {
-	keep := ime.phase != nil && ime.phase.session && ime.sameOwner() && !ime.text.closed
+	_, fcitx := ime.context.(fcitxContext)
+	cancel := ime.sameOwner() && !ime.text.closed &&
+		(ime.phase != nil && ime.phase.session || fcitx && ime.text.state.Composing)
 	ime.clearComposition()
 	ime.dead, ime.active, ime.engineComposing = true, false, false
 	ime.context = nil
-	if keep {
-		ime.apply(platform.TextEvent{Kind: platform.TextUnmark, CompositionPhase: text.CompositionCommit})
+	if cancel {
+		event := platform.TextEvent{Kind: platform.TextCancelComposition}
+		if ime.phase != nil {
+			event.CompositionPhase = text.CompositionCancel
+		}
+		ime.apply(event)
 	} else if ime.phase == nil && ime.text.state.Composing {
 		ime.apply(platform.TextEvent{Kind: platform.TextUnmark})
 	}
@@ -139,6 +146,9 @@ func (ime *linuxIME) close() {
 
 // setFocused records whether the window has the keyboard.
 func (ime *linuxIME) setFocused(focused bool) {
+	if ime.focused != focused {
+		ime.focusSpan++
+	}
 	ime.focused = focused
 	ime.sync()
 }

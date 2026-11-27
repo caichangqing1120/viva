@@ -17,6 +17,16 @@ func SetRectangularClipboardText(value string) error {
 	return nativeSetRectangularClipboardText(value)
 }
 
+// ClipboardRectangular reports whether the clipboard has the legacy column
+// selection marker. On Windows this checks the MSDEVColumnSelect format even
+// when the clipboard has no readable text; other native targets return false.
+func ClipboardRectangular() bool {
+	if _, rectangular, err, handled := driverClipboardTextWithFormat(); handled {
+		return err == nil && rectangular
+	}
+	return nativeClipboardRectangular()
+}
+
 // ClipboardTextWithFormat reads text and its rectangular-selection marker from
 // one clipboard snapshot. A target without that format returns false.
 func ClipboardTextWithFormat() (value string, rectangular bool, err error) {

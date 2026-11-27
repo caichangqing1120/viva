@@ -58,13 +58,14 @@ func (ime *linuxIME) open() bool {
 	}
 	ime.bindOwner()
 	ime.epoch++
-	context, err := daemon.open(ime)
+	epoch := ime.epoch
+	context, err := daemon.open(ime, func() bool { return ime.contextCurrent(epoch) })
 	if err != nil {
 		ime.app.checkInputMethod()
 		return false
 	}
 	ime.context = context
-	if negotiator, ok := context.(interface{ SetClientCommitPreedit(bool) error }); ok {
+	if negotiator, ok := context.(tentativeInputMethod); ok {
 		ime.negotiateTentative(negotiator)
 	} else {
 		// Fcitx 4 has no native preedit modes; the context keeps the field's
@@ -73,6 +74,8 @@ func (ime *linuxIME) open() bool {
 	}
 	return true
 }
+
+type tentativeInputMethod interface{ SetClientCommitPreedit(bool) error }
 
 // negotiateTentative asks the context for native preedit modes. It reports
 // whether explicit phases are available. A refusal is not a failure: the

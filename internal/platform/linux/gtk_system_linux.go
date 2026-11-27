@@ -40,6 +40,11 @@ type gtkClipboards struct {
 	selectionData func(data uintptr) uintptr
 	selectionSet  func(data, kind uintptr, format int32, bytes *byte, length int32) int32
 	selectionGet  func(data uintptr) uintptr
+	// Read the bytes of an explicitly offered source target.
+	hasTarget      func(clipboard, target uintptr) int32
+	waitContents   func(clipboard, target uintptr) uintptr
+	selectionBytes func(data uintptr, length *int32) uintptr
+	selectionFree  func(data uintptr)
 
 	clipboard, primary uintptr
 	ok                 bool
@@ -93,6 +98,12 @@ func (a *gtkApplication) clipboardAPI() (*gtkClipboards, error) {
 		!g.lookup(&c.selectionGet, "gtk_selection_data_get_target") {
 		c.setWithData, c.selectionData, c.selectionSet, c.selectionGet = nil, nil, nil, nil
 	}
+	if !g.lookup(&c.hasTarget, "gtk_clipboard_wait_is_target_available") ||
+		!g.lookup(&c.waitContents, "gtk_clipboard_wait_for_contents") ||
+		!g.lookup(&c.selectionBytes, "gtk_selection_data_get_data_with_length") ||
+		!g.lookup(&c.selectionFree, "gtk_selection_data_free") {
+		c.hasTarget, c.waitContents, c.selectionBytes, c.selectionFree = nil, nil, nil, nil
+	}
 	c.ok = true
 	return c, nil
 }
@@ -119,6 +130,8 @@ func (a *gtkApplication) onMain(function func()) error {
 // installHooks makes the desktop services the shell's.
 func (a *gtkApplication) installHooks() {
 	hooks := &desktopHooks{
+		saveFileDialog:       a.saveFileDialog,
+		preparePortalChooser: a.preparePortalChooser,
 		clipboardText: func() (value string, err error) {
 			err = a.onMain(func() { value, err = a.readText(false) })
 			return
@@ -134,6 +147,14 @@ func (a *gtkApplication) installHooks() {
 				return e
 			}
 			return
+		},
+		clipboardSource: func(format platform.ClipboardSourceFormat, limit int) ([]byte, error) {
+			var value []byte
+			var err error
+			if e := a.onMain(func() { value, err = a.readClipboardSource(format, limit) }); e != nil {
+				return nil, e
+			}
+			return value, err
 		},
 		primaryText: func() (value string, err error) {
 			err = a.onMain(func() { value, err = a.readText(true) })
@@ -190,6 +211,40 @@ func (a *gtkApplication) installHooks() {
 }
 
 func (a *gtkApplication) removeHooks() { shellHooks.Store(nil) }
+
+func (a *gtkApplication) readClipboardSource(format platform.ClipboardSourceFormat, limit int) ([]byte, error) {
+	c, err := a.clipboardAPI()
+	if err != nil {
+		return nil, err
+	}
+	if c.waitContents == nil {
+		return nil, ErrUnsupported
+	}
+	for _, name := range format.Targets() {
+		encoded := cString(name)
+		target := c.atomIntern(&encoded[0], 0)
+		if c.hasTarget(c.clipboard, target) == 0 {
+			continue
+		}
+		data := c.waitContents(c.clipboard, target)
+		if data == 0 {
+			return nil, fmt.Errorf("linux: clipboard owner refused %s", name)
+		}
+		defer c.selectionFree(data)
+		var length int32
+		source := c.selectionBytes(data, &length)
+		switch {
+		case length < 0 || length > 0 && source == 0:
+			return nil, fmt.Errorf("linux: invalid clipboard source for %s", name)
+		case length == 0:
+			return nil, platform.ErrNoClipboardSource
+		case int(length) > limit:
+			return nil, platform.ErrClipboardSourceTooLarge
+		}
+		return append([]byte(nil), unsafe.Slice((*byte)(unsafePointer(source)), int(length))...), nil
+	}
+	return nil, platform.ErrNoClipboardSource
+}
 
 func (a *gtkApplication) readText(primary bool) (string, error) {
 	c, err := a.clipboardAPI()

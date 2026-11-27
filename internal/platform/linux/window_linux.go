@@ -207,8 +207,12 @@ type linuxApplication struct {
 
 	// inputMethod is the connection to the input method daemon, shared by the
 	// windows that take text; inputMethodTried says it has been looked for.
-	inputMethod      inputMethodDaemon
-	inputMethodTried bool
+	inputMethod           inputMethodDaemon
+	inputMethodTried      bool
+	inputMethodReconnect  *imeReconnect
+	inputMethodFocus      *linuxIME
+	inputMethodRetryAt    time.Time
+	inputMethodRetryDelay time.Duration
 
 	// live is every window that can still be posted to, for requests that come
 	// from another goroutine (see post); the loop's own slice is not safe to read
@@ -263,6 +267,7 @@ func RunApplication(start platform.ApplicationStart) error {
 	defer application.closeStatus()
 	defer application.atspiClose()
 	defer application.closeDesktop()
+	defer application.closeInputMethod()
 	// Whoever starts to watch the appearance, from any goroutine, wakes the loop to open the
 	// connection that hears the desktop.
 	platform.SetWatchHook(func() {
@@ -278,6 +283,7 @@ func RunApplication(start platform.ApplicationStart) error {
 		// Whoever started to watch the desktop's settings during the last events is
 		// heard from now on.
 		application.syncDesktopWatch()
+		application.startInputMethodReconnect()
 		fds := application.pollFDs
 		states := application.pollStates
 		if len(fds) == 0 {
@@ -410,12 +416,11 @@ func (application *linuxApplication) OpenWindow(config platform.Config) (platfor
 			return nil, err
 		}
 	}
-	var ime *linuxIME
 	state.router = eventRouter{
 		config: config, text: textInput, scale: win.displayScale, modifierKeys: newModifierTracker(),
 		clicks: &input.ClickCounter{Interval: 500 * time.Millisecond, Distance: 4},
 		present: func(frame platform.Frame) error {
-			if ime != nil {
+			if ime := state.router.ime; ime != nil {
 				defer ime.sync()
 			}
 			if frame.Accessibility != nil {
@@ -444,9 +449,7 @@ func (application *linuxApplication) OpenWindow(config platform.Config) (platfor
 		return nil, err
 	}
 	if config.DynamicTextInput || config.TextInput != nil {
-		if ime = application.newIME(win, textInput, state.router); ime != nil {
-			state.router.ime = ime
-		}
+		state.router.ime = application.newIME(win, textInput, state.router)
 	}
 	if config.Waker != nil && config.OnRedraw != nil {
 		config.Waker.Bind(win.postRedraw)
@@ -525,6 +528,12 @@ func (application *linuxApplication) pollTimeout() int32 {
 	if application.inputMethod != nil {
 		if deadline, waiting := application.inputMethod.Deadline(); waiting {
 			timeout = int32(max(time.Until(deadline).Milliseconds()+1, 0))
+		}
+	}
+	if deadline, waiting := application.inputMethodRetryDeadline(); waiting {
+		retryTimeout := int32(max(deadline.Sub(application.timeNow()).Milliseconds()+1, 0))
+		if timeout < 0 || retryTimeout < timeout {
+			timeout = retryTimeout
 		}
 	}
 	if deadline, waiting := application.desktopRetry.deadline(platform.DesktopWatched(), application.desktop != nil); waiting {
@@ -670,14 +679,15 @@ func (state *linuxWindowState) coalesceConfigures(event unsafe.Pointer) unsafe.P
 	configure := (*xcbConfigureEvent)(event)
 	var heldSync unsafe.Pointer
 	var heldExpose unsafe.Pointer
-	var heldPointers []unsafe.Pointer
+	var heldEvents []unsafe.Pointer
+	_, cpu := state.renderer.(*cpuWindowRenderer)
 	finish := func(boundary unsafe.Pointer) unsafe.Pointer {
-		if len(heldPointers) == 0 {
+		if len(heldEvents) == 0 {
 			state.holdEvents(heldExpose, heldSync, boundary)
 		} else {
-			replay := make([]unsafe.Pointer, 0, len(heldPointers)+3)
+			replay := make([]unsafe.Pointer, 0, len(heldEvents)+3)
 			replay = append(replay, heldExpose, heldSync)
-			replay = append(replay, heldPointers...)
+			replay = append(replay, heldEvents...)
 			replay = append(replay, boundary)
 			state.holdEvents(replay...)
 		}
@@ -702,16 +712,16 @@ func (state *linuxWindowState) coalesceConfigures(event unsafe.Pointer) unsafe.P
 			// Only stale positions are obsolete. Enter and Leave change hover
 			// state that no later motion necessarily restores, so they replay
 			// in order after the merged configure.
-			kept := heldPointers[:0]
-			for _, pointer := range heldPointers {
-				if (*xcbGenericEvent)(pointer).ResponseType&0x7f == xcbMotionNotify {
-					state.win.api.free(pointer)
+			kept := heldEvents[:0]
+			for _, held := range heldEvents {
+				if (*xcbGenericEvent)(held).ResponseType&0x7f == xcbMotionNotify {
+					state.win.api.free(held)
 				} else {
-					kept = append(kept, pointer)
+					kept = append(kept, held)
 				}
 			}
-			clear(heldPointers[len(kept):])
-			heldPointers = kept
+			clear(heldEvents[len(kept):])
+			heldEvents = kept
 			*configure = *newer
 			state.win.api.free(next)
 		case xcbExpose:
@@ -719,6 +729,9 @@ func (state *linuxWindowState) coalesceConfigures(event unsafe.Pointer) unsafe.P
 			if expose.Window == state.win.id {
 				if state.hidden {
 					state.win.api.free(next)
+				} else if cpu {
+					// The CPU renderer restores each damaged rectangle after a move.
+					heldEvents = append(heldEvents, next)
 				} else {
 					// A position-only Configure does not repaint. Preserve one
 					// exposure after the final geometry instead of losing damage.
@@ -745,7 +758,7 @@ func (state *linuxWindowState) coalesceConfigures(event unsafe.Pointer) unsafe.P
 		case xcbMotionNotify, xcbEnterNotify, xcbLeaveNotify:
 			input := (*xcbInputEvent)(next)
 			if input.Event == state.win.id {
-				heldPointers = append(heldPointers, next)
+				heldEvents = append(heldEvents, next)
 				continue
 			}
 			return finish(next)
@@ -838,6 +851,9 @@ func (application *linuxApplication) closeWindow(target *linuxWindowState) {
 		}
 	}
 	if target.router.ime != nil {
+		if application.inputMethodFocus == target.router.ime {
+			application.setInputMethodFocus(nil)
+		}
 		target.router.ime.close()
 	}
 	application.atspiClosed(target)
@@ -1254,8 +1270,19 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 				router.modifierKeys.reset()
 			}
 		}
-		if router.ime != nil && realFocus {
-			router.ime.setFocused(true)
+		if realFocus {
+			if keyboardFocus && router.ime == nil && (config.DynamicTextInput || config.TextInput != nil) {
+				ime := &linuxIME{app: state.application, text: state.text, router: state.router, origin: win.contentOrigin, dead: true}
+				ime.router.ime = ime
+				state.router.ime = ime
+				router.ime = ime
+			}
+			if router.ime != nil {
+				router.ime.setFocused(true)
+				if keyboardFocus {
+					state.application.setInputMethodFocus(router.ime)
+				}
+			}
 		}
 		if realFocus {
 			if err := followFocus(renderer, textInput, true); err != nil {
@@ -1283,6 +1310,9 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 		}
 		if router.ime != nil && realFocusLoss {
 			router.ime.setFocused(false)
+			if state.application.inputMethodFocus == router.ime {
+				state.application.setInputMethodFocus(nil)
+			}
 		}
 		if realFocusLoss {
 			if err := followFocus(renderer, textInput, false); err != nil {
@@ -1302,7 +1332,14 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 			return true, nil
 		}
 	case xcbExpose:
-		if expose := (*xcbExposeEvent)(event); !state.hidden && expose.Window == win.id && expose.Count == 0 {
+		expose := (*xcbExposeEvent)(event)
+		if expose.Window != win.id || state.hidden {
+			break
+		}
+		if cpu, ok := renderer.(*cpuWindowRenderer); ok && state.exposed {
+			return false, cpu.restoreExposedPixels(expose)
+		}
+		if expose.Count == 0 {
 			state.exposed = true
 			return false, renderer.presentFull()
 		}

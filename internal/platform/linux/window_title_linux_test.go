@@ -22,13 +22,13 @@ func newTitleTestWindow(t *testing.T, written *[]titleProperty) *window {
 		connection:  1,
 		commandAtom: 50,
 		api: &xcbAPI{
-			free: func(unsafe.Pointer) {},
 			internAtom: func(_ uintptr, _ uint8, length uint16, name *byte) xcbAtomCookie {
 				return xcbAtomCookie{Sequence: atoms[string(unsafe.Slice(name, int(length)))]}
 			},
 			internAtomReply: func(_ uintptr, cookie xcbAtomCookie, _ *unsafe.Pointer) *xcbAtomReply {
 				return &xcbAtomReply{Atom: cookie.Sequence}
 			},
+			free: func(unsafe.Pointer) {}, // Replies above are Go allocations.
 			changeProperty: func(_ uintptr, _ uint8, _ uint32, property uint32, _ uint32, _ uint8, length uint32, data unsafe.Pointer) xcbVoidCookie {
 				var value []byte
 				if length > 0 {

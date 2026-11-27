@@ -22,14 +22,13 @@ type inputMethodDaemon interface {
 	Err() error
 	Deadline() (time.Time, bool)
 	Expire()
+	Close()
 	// open creates one window's input context, whose engine output goes to ime
 	// while the epoch it was opened in is current.
-	open(ime *linuxIME) (inputMethodContext, error)
+	open(ime *linuxIME, current func() bool) (inputMethodContext, error)
 }
 
-// inputMethodDaemon connects to a daemon the first time a window can take text,
-// and not again: a machine without one is the usual case, and a daemon that
-// starts later is picked up by the next run.
+// inputMethodDaemon probes once at startup. Reconnection runs off the loop.
 func (application *linuxApplication) inputMethodDaemon() inputMethodDaemon {
 	if !application.inputMethodTried {
 		application.inputMethodTried = true
@@ -95,36 +94,39 @@ func (daemon ibusDaemon) Dispatch() error             { return daemon.bus.Dispat
 func (daemon ibusDaemon) Err() error                  { return daemon.bus.Err() }
 func (daemon ibusDaemon) Deadline() (time.Time, bool) { return daemon.bus.Deadline() }
 func (daemon ibusDaemon) Expire()                     { daemon.bus.Expire() }
+func (daemon ibusDaemon) Close()                      { daemon.bus.Close() }
 
-func (daemon ibusDaemon) open(ime *linuxIME) (inputMethodContext, error) {
-	epoch := ime.epoch
-	valid := func() bool { return ime.contextCurrent(epoch) }
-	context, err := daemon.bus.NewContext("viva", ibus.Handler{
-		Commit: func(value string) {
-			if valid() {
-				ime.commit(value)
-			}
-		},
-		Preedit: func(event ibus.PreeditEvent) {
-			if valid() {
-				ime.nativePreedit(event)
-			}
-		},
-		Forward: func(keysym, _, state uint32) {
-			if valid() {
-				ime.forward(keysym, state&ibus.ReleaseMask != 0, state)
-			}
-		},
-		DeleteSurrounding: func(offset, count int) {
-			if valid() {
-				ime.deleteSurrounding(offset, count)
-			}
-		},
-	})
+func (daemon ibusDaemon) open(ime *linuxIME, current func() bool) (inputMethodContext, error) {
+	context, err := daemon.bus.NewContext("viva", ime.ibusHandler(current))
 	if err != nil {
 		return nil, err
 	}
 	return ibusContext{context}, nil
+}
+
+func (ime *linuxIME) ibusHandler(current func() bool) ibus.Handler {
+	return ibus.Handler{
+		Commit: func(value string) {
+			if current() {
+				ime.commit(value)
+			}
+		},
+		Preedit: func(event ibus.PreeditEvent) {
+			if current() {
+				ime.nativePreedit(event)
+			}
+		},
+		Forward: func(keysym, _, state uint32) {
+			if current() {
+				ime.forward(keysym, state&ibus.ReleaseMask != 0, state)
+			}
+		},
+		DeleteSurrounding: func(offset, count int) {
+			if current() {
+				ime.deleteSurrounding(offset, count)
+			}
+		},
+	}
 }
 
 // ibusContext is an IBus context behind the daemon interface. IBus counts
@@ -154,26 +156,25 @@ func (daemon fcitxDaemon) Dispatch() error             { return daemon.bus.Dispa
 func (daemon fcitxDaemon) Err() error                  { return daemon.bus.Err() }
 func (daemon fcitxDaemon) Deadline() (time.Time, bool) { return daemon.bus.Deadline() }
 func (daemon fcitxDaemon) Expire()                     { daemon.bus.Expire() }
+func (daemon fcitxDaemon) Close()                      { daemon.bus.Close() }
 
-func (daemon fcitxDaemon) open(ime *linuxIME) (inputMethodContext, error) {
-	context, err := daemon.bus.NewContext("viva", ime.fcitxHandler())
+func (daemon fcitxDaemon) open(ime *linuxIME, current func() bool) (inputMethodContext, error) {
+	context, err := daemon.bus.NewContext("viva", ime.fcitxHandler(current))
 	if err != nil {
 		return nil, err
 	}
 	return fcitxContext{context}, nil
 }
 
-func (ime *linuxIME) fcitxHandler() fcitx.Handler {
-	epoch := ime.epoch
-	valid := func() bool { return ime.contextCurrent(epoch) }
+func (ime *linuxIME) fcitxHandler(current func() bool) fcitx.Handler {
 	return fcitx.Handler{
 		Commit: func(value string) {
-			if valid() {
+			if current() {
 				ime.commit(value)
 			}
 		},
 		Preedit: func(event fcitx.PreeditEvent) {
-			if !valid() {
+			if !current() {
 				return
 			}
 			if !event.Visible || event.Text == "" {
@@ -186,12 +187,12 @@ func (ime *linuxIME) fcitxHandler() fcitx.Handler {
 			ime.preedit(event.Text, event.Cursor, true, text.Range{Start: event.Selection.Start, End: event.Selection.End})
 		},
 		Forward: func(keysym, state uint32, release bool) {
-			if valid() {
+			if current() {
 				ime.forward(keysym, release, state)
 			}
 		},
 		DeleteSurrounding: func(offset, count int) {
-			if valid() {
+			if current() {
 				ime.deleteSurrounding(offset, count)
 			}
 		},

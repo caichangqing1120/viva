@@ -33,7 +33,7 @@ func TestBlankImportLinksNoComponentSymbols(t *testing.T) {
 		}
 	}
 	binary := filepath.Join(dir, "linkage.bin")
-	build := exec.Command("go", "build", "-mod=mod", "-o", binary, ".")
+	build := exec.Command("go", "build", "-trimpath", "-mod=mod", "-o", binary, ".")
 	build.Dir = dir
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := build.CombinedOutput(); err != nil {

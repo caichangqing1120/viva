@@ -3,7 +3,11 @@
 package web
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
+	"image"
+	"image/png"
 	"syscall/js"
 	"testing"
 	"time"
@@ -39,18 +43,19 @@ func readImage(t *testing.T) ([]byte, error) {
 	}
 }
 
-// pngPicture is a 1x1 PNG: the clipboard check reads its header, so the bytes
-// must decode as one.
-const pngPicture = "new Uint8Array([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x00,0x00,0x0d,0x49,0x48,0x44,0x52,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,0x08,0x06,0x00,0x00,0x00,0x1f,0x15,0xc4,0x89,0x00,0x00,0x00,0x0b,0x49,0x44,0x41,0x54,0x78,0x9c,0x63,0x60,0x00,0x02,0x00,0x00,0x05,0x00,0x01,0x7a,0x5e,0xab,0x3f,0x00,0x00,0x00,0x00,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82])"
-
 func TestReadClipboardImagePNG(t *testing.T) {
+	var fixture bytes.Buffer
+	if err := png.Encode(&fixture, image.NewNRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(fixture.Bytes())
 	installClipboard(t, `return { read: () => Promise.resolve([
 		{ types: ["text/plain"], getType: () => Promise.reject(new Error("text")) },
-		{ types: ["image/png"], getType: () => Promise.resolve(new Blob([`+pngPicture+`])) },
+		{ types: ["image/png"], getType: () => Promise.resolve(new Blob([Uint8Array.from(atob("`+encoded+`"), c => c.charCodeAt(0))])) },
 	]) }`)
-	png, err := readImage(t)
-	if err != nil || len(png) != 68 || png[1] != 'P' {
-		t.Fatalf("png = %d bytes, %v", len(png), err)
+	got, err := readImage(t)
+	if err != nil || !bytes.Equal(got, fixture.Bytes()) {
+		t.Fatalf("PNG readback = %d bytes, %v; want %d unchanged bytes", len(got), err, fixture.Len())
 	}
 }
 
